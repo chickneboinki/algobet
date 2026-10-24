@@ -1,7 +1,49 @@
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
-body { font-family: system-ui, -apple-system, sans-serif; background: #09090b; min-height: 100dvh; color: #fff; }
-.card { @apply bg-white/5 backdrop-blur border border-white/10 rounded-2xl p-4; }
-.btn-neon { @apply bg-neon text-black font-semibold px-4 py-2.5 rounded-xl hover:brightness-110 active:scale-[0.98] transition; }
-.btn-outline { @apply border border-neon/50 text-neon px-4 py-2.5 rounded-xl hover:bg-neon/10 transition; }
+
+body {
+  font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  background: #0a0a0f;
+  min-height: 100dvh;
+  color: #f4f4f5;
+  -webkit-font-smoothing: antialiased;
+}
+
+.card {
+  @apply bg-zinc-900/90 border border-white/10 rounded-2xl p-4 shadow-lg shadow-black/20;
+}
+
+.btn-primary {
+  @apply bg-[#00BFFF] text-black font-bold px-4 py-3 rounded-2xl
+    active:scale-[0.98] transition w-full text-center;
+}
+
+.btn-soft {
+  @apply bg-white/10 text-white font-medium px-4 py-3 rounded-2xl
+    active:scale-[0.98] transition;
+}
+
+.chip {
+  @apply px-3 py-1.5 rounded-full text-sm font-medium whitespace-nowrap transition;
+}
+
+.chip-on {
+  @apply bg-[#00BFFF] text-black;
+}
+
+.chip-off {
+  @apply bg-white/10 text-zinc-300;
+}
+
+.hint {
+  @apply text-sm text-zinc-400 leading-relaxed;
+}
+
+.label {
+  @apply text-xs font-semibold uppercase tracking-wide text-zinc-500;
+}
+
+.stat-box {
+  @apply bg-black/40 rounded-xl p-3 text-center;
+}
