@@ -9,30 +9,34 @@ export default function AlgorithmsPage() {
   }, [])
 
   return (
-    <div className="space-y-3">
-      <p className="text-sm text-zinc-400 px-1">
-        Built-in algorithms that actually evaluate games. AI-generated ones appear as code you can adapt.
-      </p>
+    <div className="space-y-4">
+      <div className="card space-y-2">
+        <h2 className="font-semibold text-lg">Your tools</h2>
+        <p className="hint">
+          These are simple rules that look at a game and say who they like.
+          Open a game on the Games tab, then tap one of these to run it.
+        </p>
+      </div>
+
       {algos.map((a) => (
-        <div key={a.id} className="card">
-          <div className="flex justify-between items-start gap-2">
-            <h3 className="font-semibold">{a.name}</h3>
-            <span className="text-[10px] uppercase tracking-wider px-2 py-0.5 rounded-full bg-white/10 text-zinc-400 shrink-0">
-              {a.created_by}
-            </span>
-          </div>
-          <p className="text-sm text-zinc-400 mt-1">{a.description}</p>
+        <div key={a.id} className="card space-y-2">
+          <h3 className="font-semibold text-base">{a.name}</h3>
+          <p className="hint">{a.description}</p>
           {a.tags && (
-            <div className="flex gap-1.5 mt-2 flex-wrap">
+            <div className="flex gap-1.5 flex-wrap pt-1">
               {a.tags.map((t: string) => (
-                <span key={t} className="text-xs px-2 py-0.5 rounded-full bg-neon/10 text-neon">{t}</span>
+                <span key={t} className="text-xs px-2.5 py-1 rounded-full bg-[#00BFFF]/15 text-[#00BFFF]">
+                  {t}
+                </span>
               ))}
             </div>
           )}
         </div>
       ))}
-      <div className="card border-dashed border-white/20 text-center text-zinc-500 py-8 text-sm">
-        Generate more in the AI Lab tab
+
+      <div className="card border-dashed border-white/20 text-center py-8">
+        <p className="font-medium mb-1">Want a new tool?</p>
+        <p className="hint text-sm">Go to the AI tab and describe what you want in plain English.</p>
       </div>
     </div>
   )
