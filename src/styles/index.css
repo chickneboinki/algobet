@@ -1,0 +1,7 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+body { font-family: system-ui, -apple-system, sans-serif; background: #09090b; min-height: 100dvh; color: #fff; }
+.card { @apply bg-white/5 backdrop-blur border border-white/10 rounded-2xl p-4; }
+.btn-neon { @apply bg-neon text-black font-semibold px-4 py-2.5 rounded-xl hover:brightness-110 active:scale-[0.98] transition; }
+.btn-outline { @apply border border-neon/50 text-neon px-4 py-2.5 rounded-xl hover:bg-neon/10 transition; }
