@@ -273,6 +273,11 @@ export default async function handler(req, res) {
         (b.lean.type === 'Line gap') - (a.lean.type === 'Line gap') ||
         (b.lean.gap || b.lean.prob || 0) - (a.lean.gap || a.lean.prob || 0)
     )
+    .filter((p, i, arr) => {
+      // one entry per player + stat (a line gap otherwise shows up twice: Over low line, Under high line)
+      const k = `${norm(p.player)}|${marketKey(p.market)}`;
+      return arr.findIndex((q) => `${norm(q.player)}|${marketKey(q.market)}` === k) === i;
+    })
     .slice(0, 8);
 
   const live_count = props.filter((p) => p.live).length;
