@@ -1,5 +1,21 @@
-/** Daily: settle → rank all sports → post each user's own Discord webhook. */
+/** Daily: settle → rank all sports → post each user's own Discord webhook.
+ *  Also serves /api/health (?route=health) so the two tiny endpoints share
+ *  one Vercel Serverless Function — Hobby plan caps a deployment at 12. */
 export default async function handler(req, res) {
+  res.setHeader('Access-Control-Allow-Origin', '*');
+  if (req.method === 'OPTIONS') return res.status(200).end();
+
+  const url = new URL(req.url, 'http://localhost');
+  if (url.searchParams.get('route') === 'health') {
+    return res.status(200).json({
+      ok: true,
+      openrouter_configured: Boolean(process.env.OPENROUTER_API_KEY),
+      odds_api_configured: Boolean(process.env.ODDS_API_KEY),
+      balldontlie_configured: Boolean(process.env.BALLDONTLIE_API_KEY),
+      time: new Date().toISOString(),
+    });
+  }
+
   const auth = req.headers.authorization || '';
   const cronSecret = process.env.CRON_SECRET;
   if (cronSecret && auth !== `Bearer ${cronSecret}`) {
