@@ -13,7 +13,7 @@ const LEAGUE_COLORS = {
   NCAAB: 0x7c3aed,
   NBA: 0xc8102e,
   MLB: 0x002d72,
-  NHL: 0x000000,
+  NHL: 0x111111,
   DEFAULT: 0x38bdf8,
 };
 
@@ -52,7 +52,6 @@ function centralDateKey(iso) {
 
 function todayTomorrowKeys() {
   const today = new Date().toLocaleDateString('en-CA', { timeZone: 'America/Chicago' });
-  // tomorrow in Central: add 24h to a noon-CT reference to avoid DST edge issues
   const parts = today.split('-').map(Number);
   const noonUtcGuess = Date.UTC(parts[0], parts[1] - 1, parts[2], 18, 0, 0);
   const tomorrow = new Date(noonUtcGuess + 24 * 3600e3).toLocaleDateString('en-CA', {
@@ -71,7 +70,6 @@ function stillUpcoming(iso) {
   if (!iso) return true;
   const t = new Date(iso).getTime();
   if (!Number.isFinite(t)) return true;
-  // allow games that started < 3 hours ago only if marked live; default: must be in the future
   return t > Date.now() - 2 * 60e3;
 }
 
@@ -89,7 +87,6 @@ function americanToProb(odds) {
   return odds > 0 ? 100 / (odds + 100) : Math.abs(odds) / (Math.abs(odds) + 100);
 }
 
-/** Lightweight tool suite so notify always evaluates without extra HTTP hops */
 function runToolsOnGame(game) {
   const o = game.odds || {};
   const books = game.books || {};
@@ -169,12 +166,19 @@ function runToolsOnGame(game) {
       reasoning: `Small home lean for ${sport} when other tools are quiet.`,
     });
 
-  results.sort((a, b) => (b.confidence || 0) * (1 + (b.expected_value || 0)) - (a.confidence || 0) * (1 + (a.expected_value || 0)));
+  results.sort(
+    (a, b) =>
+      (b.confidence || 0) * (1 + (b.expected_value || 0)) -
+      (a.confidence || 0) * (1 + (a.expected_value || 0))
+  );
   return results;
 }
 
+async function sleep(ms) {
+  await new Promise((r) => setTimeout(r, ms));
+}
+
 async function postDiscord(webhook, payload) {
-  // Prefer components (real buttons). If Discord rejects, retry with links only in embed.
   const attempt = async (body) => {
     const dr = await fetch(webhook, {
       method: 'POST',
@@ -185,12 +189,27 @@ async function postDiscord(webhook, payload) {
     return { ok: dr.ok, status: dr.status, text };
   };
 
-  let r = await attempt(payload);
-  if (!r.ok && payload.components) {
-    const { components, ...rest } = payload;
-    r = await attempt(rest);
+  for (let tryN = 0; tryN < 4; tryN++) {
+    let r = await attempt(payload);
+    if (!r.ok && payload.components && r.status !== 429) {
+      const { components, ...rest } = payload;
+      r = await attempt(rest);
+    }
+    if (r.ok) {
+      await sleep(1500); // stay under Discord rate limits
+      return;
+    }
+    if (r.status === 429) {
+      let wait = 2;
+      try {
+        wait = Math.min(8, Number(JSON.parse(r.text).retry_after) || 2);
+      } catch {}
+      await sleep(wait * 1000 + 200);
+      continue;
+    }
+    throw new Error(`Discord ${r.status}: ${r.text.slice(0, 180)}`);
   }
-  if (!r.ok) throw new Error(`Discord ${r.status}: ${r.text.slice(0, 180)}`);
+  throw new Error('Discord rate limited — try again in a minute');
 }
 
 function gameCardEmbed(game, tools, dayLabel) {
@@ -208,7 +227,9 @@ function gameCardEmbed(game, tools, dayLabel) {
     const team = sideLabel(best.recommended_side, game.home_team, game.away_team);
     lines.push(`**Best lean: ${team}** (${best.recommended_side})`);
     lines.push(`Tool: **${best.algorithm_name}**`);
-    lines.push(`How sure: **${Math.round((best.confidence || 0) * 100)}%** · Edge: **${((best.expected_value || 0) * 100).toFixed(1)}%**`);
+    lines.push(
+      `How sure: **${Math.round((best.confidence || 0) * 100)}%** · Edge: **${((best.expected_value || 0) * 100).toFixed(1)}%**`
+    );
     lines.push('');
     lines.push(`**Why:** ${best.reasoning}`);
   } else {
@@ -225,24 +246,17 @@ function gameCardEmbed(game, tools, dayLabel) {
   }
   lines.push('');
   lines.push('**Live prices from the books**');
-  lines.push(`FanDuel ML: ${fmtOdds(fd.ml_home)} / ${fmtOdds(fd.ml_away)} · spread ${fd.spread ?? fd.spread_home ?? '—'} · total ${fd.total ?? '—'}`);
-  lines.push(`DraftKings ML: ${fmtOdds(dk.ml_home)} / ${fmtOdds(dk.ml_away)} · spread ${dk.spread ?? dk.spread_home ?? '—'} · total ${dk.total ?? '—'}`);
+  lines.push(
+    `FanDuel ML: ${fmtOdds(fd.ml_home)} / ${fmtOdds(fd.ml_away)} · spread ${fd.spread ?? fd.spread_home ?? '—'} · total ${fd.total ?? '—'}`
+  );
+  lines.push(
+    `DraftKings ML: ${fmtOdds(dk.ml_home)} / ${fmtOdds(dk.ml_away)} · spread ${dk.spread ?? dk.spread_home ?? '—'} · total ${dk.total ?? '—'}`
+  );
   lines.push('');
-  lines.push('**Open this bet**');
-  lines.push(`[View on FanDuel](${urls.fanduel})`);
-  lines.push(`[View on DraftKings](${urls.draftkings})`);
-  lines.push(`[View on PrizePicks](${urls.prizepicks})`);
-
-  const components = [
-    {
-      type: 1,
-      components: [
-        { type: 2, style: 5, label: 'View on FanDuel', url: urls.fanduel },
-        { type: 2, style: 5, label: 'View on DraftKings', url: urls.draftkings },
-        { type: 2, style: 5, label: 'View on PrizePicks', url: urls.prizepicks },
-      ],
-    },
-  ];
+  lines.push('**Open this bet (tap a link):**');
+  lines.push(`🔵 [View on FanDuel](${urls.fanduel})`);
+  lines.push(`🟢 [View on DraftKings](${urls.draftkings})`);
+  lines.push(`🟣 [View on PrizePicks](${urls.prizepicks})`);
 
   return {
     embeds: [
@@ -262,7 +276,16 @@ function gameCardEmbed(game, tools, dayLabel) {
         footer: { text: 'HelpBet · tools ran on FanDuel + DraftKings lines' },
       },
     ],
-    components,
+    components: [
+      {
+        type: 1,
+        components: [
+          { type: 2, style: 5, label: 'View on FanDuel', url: urls.fanduel },
+          { type: 2, style: 5, label: 'View on DraftKings', url: urls.draftkings },
+          { type: 2, style: 5, label: 'View on PrizePicks', url: urls.prizepicks },
+        ],
+      },
+    ],
   };
 }
 
@@ -305,7 +328,6 @@ async function sendSection({ webhook, games, dayLabel, banner }) {
     ],
   });
 
-  // Group by league for DIFFERENT LEAGUE banners
   const byLeague = new Map();
   for (const g of games) {
     const L = String(g.sport || 'OTHER').toUpperCase();
@@ -331,7 +353,6 @@ async function sendSection({ webhook, games, dayLabel, banner }) {
       const card = gameCardEmbed(game, tools, dayLabel);
       await postDiscord(webhook, card);
       n += 1;
-      if (n % 3 === 0) await new Promise((r) => setTimeout(r, 600));
     }
   }
   return n;
@@ -364,7 +385,6 @@ async function listUsersWithWebhooks() {
 
 async function runDigest(webhook, base, leaguesFilter) {
   let games = await loadGames(base);
-  // upcoming only
   games = games.filter((g) => stillUpcoming(g.start_time || g.commence_time));
   if (Array.isArray(leaguesFilter) && leaguesFilter.length) {
     const set = new Set(leaguesFilter.map((x) => String(x).toUpperCase()));
