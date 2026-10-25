@@ -4,12 +4,16 @@ import { api } from '../services/api'
 export default function SettingsPage() {
   const [settings, setSettings] = useState<any>(null)
   const [health, setHealth] = useState<any>(null)
+  const [webhook, setWebhook] = useState('')
+  const [msg, setMsg] = useState('')
+  const [testing, setTesting] = useState(false)
 
   useEffect(() => {
     Promise.all([api.settings(), api.health()])
       .then(([s, h]) => {
         setSettings(s)
         setHealth(h)
+        if (s?.discord_webhook) setWebhook(s.discord_webhook)
       })
       .catch(console.error)
   }, [])
@@ -18,10 +22,39 @@ export default function SettingsPage() {
     setSettings(await api.updateSettings(patch))
   }
 
+  const saveWebhook = async () => {
+    try {
+      await save({ discord_webhook: webhook.trim() })
+      setMsg('Webhook saved — daily posts at ~6 AM Central + Send to channel on Best')
+    } catch (e: any) {
+      setMsg(
+        e.message ||
+          'Save failed. Add column: alter table app_settings add column if not exists discord_webhook text;'
+      )
+    }
+  }
+
+  const testSend = async () => {
+    setTesting(true)
+    setMsg('')
+    try {
+      const r = await api.notifyDiscord({
+        webhook_url: webhook.trim() || undefined,
+        title: 'HelpBet · Test post',
+        content: 'Test from Setup',
+      })
+      setMsg(r.ok ? `Test OK — ${r.embeds_sent} embeds` : r.error || 'Done')
+    } catch (e: any) {
+      setMsg(e.message || 'Test failed')
+    } finally {
+      setTesting(false)
+    }
+  }
+
   if (!settings) return <p className="text-zinc-400 text-center py-10 text-sm">Loading…</p>
 
   return (
-    <div className="space-y-4">
+    <div className="space-y-4 pb-8">
       <div className="card space-y-3">
         <p className="label">Setup</p>
         <h2 className="text-lg font-semibold">Connections</h2>
@@ -46,47 +79,41 @@ export default function SettingsPage() {
       </div>
 
       <div className="card space-y-3">
-        <h2 className="text-lg font-semibold">Free live odds</h2>
-        <p className="hint">If you only see sample games, add a free key from The Odds API.</p>
-        <ol className="space-y-3 text-sm">
-          {[
-            ['Open the-odds-api.com and start the free plan'],
-            ['Copy the API key from their email'],
-            ['In Vercel → helpbet → Settings → Environment Variables, add ODDS_API_KEY'],
-            ['Redeploy once, then refresh this app'],
-          ].map((step, i) => (
-            <li key={i} className="flex gap-3">
-              <span className="shrink-0 w-7 h-7 rounded-full bg-sky-500 text-black font-bold flex items-center justify-center text-sm">
-                {i + 1}
-              </span>
-              <p className="pt-1 text-zinc-300">{step[0]}</p>
-            </li>
-          ))}
+        <h2 className="text-lg font-semibold">Discord channel</h2>
+        <p className="hint">
+          Rich embeds: matchup, league, start time (Central), tool leans, and player bets. Posts daily ~6 AM Central and
+          anytime you tap Send to channel on Best.
+        </p>
+        <ol className="hint text-xs space-y-1 list-decimal list-inside">
+          <li>Discord channel → Edit channel → Integrations → Webhooks → New Webhook</li>
+          <li>Copy webhook URL</li>
+          <li>Paste below (or set DISCORD_WEBHOOK_URL in Vercel env)</li>
         </ol>
-        <a
-          href="https://the-odds-api.com/"
-          target="_blank"
-          rel="noreferrer"
-          className="book-badge text-sky-400 border-sky-500/30"
-        >
-          Open The Odds API
-        </a>
+        <input
+          value={webhook}
+          onChange={(e) => setWebhook(e.target.value)}
+          placeholder="https://discord.com/api/webhooks/..."
+          className="w-full bg-black/40 border border-white/10 rounded-xl px-3 py-2.5 text-sm"
+        />
+        <div className="flex gap-2">
+          <button type="button" className="btn-primary flex-1" onClick={saveWebhook}>
+            Save webhook
+          </button>
+          <button type="button" className="btn-ghost flex-1" disabled={testing} onClick={testSend}>
+            {testing ? 'Sending…' : 'Test post'}
+          </button>
+        </div>
+        {msg && <p className="text-sm text-sky-400">{msg}</p>}
       </div>
 
       <div className="card space-y-3">
-        <h2 className="text-lg font-semibold">Auto scan</h2>
-        <p className="hint">Server runs ranked scans twice daily. You can also run a scan from the Watch screen.</p>
-        <label className="flex items-center justify-between text-sm py-1">
-          <span>Prefer auto-watch</span>
-          <input
-            type="checkbox"
-            checked={!!(settings.auto_watch_enabled ?? settings.watcher_enabled)}
-            onChange={(e) => save({ auto_watch_enabled: e.target.checked, watcher_enabled: e.target.checked })}
-            className="w-5 h-5 accent-sky-500"
-          />
-        </label>
+        <h2 className="text-lg font-semibold">Learning</h2>
+        <p className="hint">
+          Daily job auto-settles finished home/away bets from scores, then ranks tools higher when they win. Mark props
+          won/lost on Bets if needed.
+        </p>
         <label className="block text-sm">
-          <span className="text-zinc-400">Minimum how sure to keep a pick (0–1)</span>
+          <span className="text-zinc-400">Minimum confidence to keep a pick (0–1)</span>
           <input
             type="number"
             step={0.05}
@@ -100,11 +127,8 @@ export default function SettingsPage() {
       </div>
 
       <div className="card-soft">
-        <p className="label mb-1">Honest limits</p>
-        <p className="hint">
-          Free odds credits are limited. Player props and deep team stats need paid feeds. Tools use prices and book
-          disagreement first; your tracked results train ranking weights over time.
-        </p>
+        <p className="label mb-1">Cron</p>
+        <p className="hint">Vercel Hobby: one daily run at 11:00 UTC (~6 AM Central Daylight Time).</p>
       </div>
     </div>
   )

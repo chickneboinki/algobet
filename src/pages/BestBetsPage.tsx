@@ -22,10 +22,11 @@ export default function BestBetsPage() {
   const [tracking, setTracking] = useState<string | null>(null)
   const [sport, setSport] = useState('ALL')
   const [toast, setToast] = useState('')
+  const [sending, setSending] = useState(false)
 
   function showToast(msg: string) {
     setToast(msg)
-    setTimeout(() => setToast(''), 2200)
+    setTimeout(() => setToast(''), 2800)
   }
 
   async function load() {
@@ -53,13 +54,11 @@ export default function BestBetsPage() {
         sport: p.sport,
         home_team: p.home_team,
         away_team: p.away_team,
-        side: p.recommended_side,
         recommended_side: p.recommended_side,
         algorithm_id: p.algorithm_id,
         algorithm_name: p.algorithm_name,
         confidence: p.confidence,
         expected_value: p.expected_value,
-        odds: p.odds,
         odds_taken:
           p.recommended_side === 'home'
             ? p.odds?.ml_home
@@ -75,6 +74,21 @@ export default function BestBetsPage() {
       showToast(e.message || 'Could not save')
     } finally {
       setTracking(null)
+    }
+  }
+
+  async function sendToChannel() {
+    setSending(true)
+    try {
+      const r = await api.notifyDiscord({
+        title: 'HelpBet · Best picks now',
+        content: 'Manual send from the app',
+      })
+      showToast(r.ok ? `Sent ${r.embeds_sent || ''} embeds to Discord` : r.error || 'Sent')
+    } catch (e: any) {
+      showToast(e.message || 'Send failed — set Discord webhook in Setup')
+    } finally {
+      setSending(false)
     }
   }
 
@@ -98,13 +112,18 @@ export default function BestBetsPage() {
         <div>
           <h2 className="page-title">Best picks</h2>
           <p className="hint mt-1">
-            The strongest picks from all tools, best first.
+            Strongest tool picks first.
             {data ? ` Checked ${data.games_scanned} games.` : ''}
           </p>
         </div>
-        <button type="button" className="btn-ghost shrink-0" onClick={load}>
-          Refresh
-        </button>
+        <div className="flex flex-col gap-2 shrink-0">
+          <button type="button" className="btn-ghost" onClick={load}>
+            Refresh
+          </button>
+          <button type="button" className="btn-primary text-sm" disabled={sending} onClick={sendToChannel}>
+            {sending ? 'Sending…' : 'Send to channel'}
+          </button>
+        </div>
       </div>
 
       {toast && <div className="toast">{toast}</div>}
@@ -151,6 +170,17 @@ export default function BestBetsPage() {
                 Pick from {p.algorithm_name}
                 {ml != null && <span className="odds-num text-zinc-300"> · {fmtOdds(ml)}</span>}
               </p>
+              {(p.start_time || p.commence_time) && (
+                <p className="text-xs text-zinc-500 mt-1">
+                  {new Date(p.start_time || p.commence_time).toLocaleString([], {
+                    weekday: 'short',
+                    month: 'short',
+                    day: 'numeric',
+                    hour: 'numeric',
+                    minute: '2-digit',
+                  })}
+                </p>
+              )}
             </div>
             <div className="grid grid-cols-2 gap-2">
               <div className="stat-box">
