@@ -50,7 +50,16 @@ export const api = {
     return data || []
   },
   async trackBet(body: any) {
-    const { data, error } = await supabase.from('bets').insert(body).select().single()
+    // Only send columns that exist on the bets table so extra fields never break the insert
+    const cols = [
+      'game_id', 'sport', 'home_team', 'away_team', 'algorithm_id', 'algorithm_name',
+      'recommended_side', 'side', 'confidence', 'expected_value', 'stake_units',
+      'odds_taken', 'notes', 'placed_at', 'status', 'profit_units',
+    ]
+    const row: Record<string, any> = {}
+    for (const c of cols) if (body[c] !== undefined) row[c] = body[c]
+    if (row.side == null) row.side = row.recommended_side
+    const { data, error } = await supabase.from('bets').insert(row).select().single()
     if (error) throw error
     return data
   },

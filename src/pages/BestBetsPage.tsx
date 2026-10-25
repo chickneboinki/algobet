@@ -20,6 +20,12 @@ export default function BestBetsPage() {
   const [error, setError] = useState('')
   const [tracking, setTracking] = useState<string | null>(null)
   const [sport, setSport] = useState('ALL')
+  const [toast, setToast] = useState('')
+
+  function showToast(msg: string) {
+    setToast(msg)
+    setTimeout(() => setToast(''), 2200)
+  }
 
   async function load() {
     setLoading(true)
@@ -63,9 +69,9 @@ export default function BestBetsPage() {
         status: 'pending',
         placed_at: new Date().toISOString(),
       })
-      alert('Saved to your bets.')
+      showToast('Saved to My Bets')
     } catch (e: any) {
-      alert(e.message || 'Could not save')
+      showToast(e.message || 'Could not save')
     } finally {
       setTracking(null)
     }
@@ -106,7 +112,9 @@ export default function BestBetsPage() {
         )}
       </div>
 
-      <div className="flex gap-2 overflow-x-auto pb-1">
+      {toast && <div className="toast">{toast}</div>}
+
+      <div className="flex gap-2 overflow-x-auto pb-1 no-scrollbar">
         {SPORTS.map((s) => (
           <button key={s} type="button" onClick={() => setSport(s)} className={`chip ${sport === s ? 'chip-on' : 'chip-off'}`}>
             {s === 'ALL' ? 'All' : s}
@@ -134,8 +142,10 @@ export default function BestBetsPage() {
         return (
           <div key={`${p.game_id}-${p.algorithm_id}-${i}`} className="card space-y-3">
             <div className="flex items-center justify-between gap-2">
-              <span className="text-xs font-semibold text-sky-400 tracking-wide">{p.sport}</span>
-              <span className="text-xs text-zinc-500">#{i + 1}</span>
+              <span className="text-[11px] font-semibold text-sky-300 tracking-wide px-2 py-0.5 rounded-full bg-sky-400/10">
+                {p.sport}
+              </span>
+              <span className="text-xs text-zinc-500 odds-num">#{i + 1}</span>
             </div>
             <div>
               <p className="text-sm text-zinc-400">

@@ -8,6 +8,52 @@ import BankrollPage from './pages/BankrollPage'
 import WatchPage from './pages/WatchPage'
 import SettingsPage from './pages/SettingsPage'
 
+const stroke = {
+  fill: 'none',
+  stroke: 'currentColor',
+  strokeWidth: 1.7,
+  strokeLinecap: 'round' as const,
+  strokeLinejoin: 'round' as const,
+  viewBox: '0 0 24 24',
+}
+
+const icons: Record<string, JSX.Element> = {
+  Best: (
+    <svg {...stroke}>
+      <path d="M12 3l2.6 5.6 6.1.7-4.5 4.2 1.2 6L12 16.5 6.6 19.5l1.2-6L3.3 9.3l6.1-.7L12 3z" />
+    </svg>
+  ),
+  Games: (
+    <svg {...stroke}>
+      <rect x="3" y="5" width="18" height="14" rx="3" />
+      <path d="M3 10h18M9 5v14" />
+    </svg>
+  ),
+  Tools: (
+    <svg {...stroke}>
+      <path d="M4 7h10M18 7h2M4 17h2M10 17h10" />
+      <circle cx="16" cy="7" r="2" />
+      <circle cx="8" cy="17" r="2" />
+    </svg>
+  ),
+  AI: (
+    <svg {...stroke}>
+      <path d="M12 3v3M12 18v3M3 12h3M18 12h3M6 6l2 2M16 16l2 2M18 6l-2 2M8 16l-2 2" />
+      <circle cx="12" cy="12" r="3" />
+    </svg>
+  ),
+  Bets: (
+    <svg {...stroke}>
+      <path d="M8 6h12M8 12h12M8 18h12M4 6h.01M4 12h.01M4 18h.01" />
+    </svg>
+  ),
+  Bank: (
+    <svg {...stroke}>
+      <path d="M3 10l9-6 9 6M5 10v8M9.5 10v8M14.5 10v8M19 10v8M3 20h18" />
+    </svg>
+  ),
+}
+
 const tabs = [
   { to: '/', label: 'Best' },
   { to: '/games', label: 'Games' },
@@ -20,19 +66,19 @@ const tabs = [
 export default function App() {
   return (
     <div className="shell flex flex-col">
-      <header className="sticky top-0 z-20 px-4 py-3 border-b border-white/[0.06] bg-[#07080c]/95 backdrop-blur-xl">
+      <header className="app-header">
         <div className="flex items-center gap-3">
-          <div className="w-9 h-9 rounded-xl bg-gradient-to-br from-sky-400 to-blue-600 flex items-center justify-center text-sm font-bold text-white shadow-lg shadow-blue-500/25">
+          <div className="w-8 h-8 rounded-[10px] bg-[var(--accent)] flex items-center justify-center text-[13px] font-bold text-[#06121f]">
             A
           </div>
           <div>
-            <h1 className="text-[17px] font-semibold tracking-tight leading-tight">AlgoBet</h1>
-            <p className="text-[11px] text-zinc-500 leading-none mt-0.5">Find value. Track results. Improve.</p>
+            <h1 className="text-[16px] font-semibold tracking-tight leading-tight">AlgoBet</h1>
+            <p className="text-[11px] text-zinc-500 leading-none mt-0.5">Find value. Track results.</p>
           </div>
         </div>
       </header>
 
-      <main className="flex-1 overflow-y-auto pb-28 px-3.5 pt-3">
+      <main className="flex-1 overflow-y-auto pb-28 px-4 pt-4">
         <Routes>
           <Route path="/" element={<BestBetsPage />} />
           <Route path="/games" element={<GamesPage />} />
@@ -50,24 +96,16 @@ export default function App() {
       </main>
 
       <nav className="nav-bar">
-        <div className="max-w-[480px] mx-auto grid grid-cols-6 py-2.5">
+        <div className="max-w-[480px] mx-auto grid grid-cols-6 pt-2.5 pb-2">
           {tabs.map((t) => (
             <NavLink
               key={t.to}
               to={t.to}
               end={t.to === '/'}
-              className={({ isActive }) =>
-                `flex flex-col items-center gap-1.5 text-[10px] font-medium transition ${
-                  isActive ? 'text-sky-400' : 'text-zinc-500'
-                }`
-              }
+              className={({ isActive }) => `nav-item ${isActive ? 'nav-item-active' : ''}`}
             >
-              {({ isActive }) => (
-                <>
-                  <span className={`w-1.5 h-1.5 rounded-full ${isActive ? 'bg-sky-400' : 'bg-transparent'}`} />
-                  <span>{t.label}</span>
-                </>
-              )}
+              {icons[t.label]}
+              <span>{t.label}</span>
             </NavLink>
           ))}
         </div>

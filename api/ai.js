@@ -1,8 +1,9 @@
+// Paid Llama slug first (the :free variant is no longer available), free models as fallbacks
 const FREE_MODELS = [
+  'meta-llama/llama-3.3-70b-instruct',
   'google/gemma-4-31b-it:free',
   'google/gemma-4-26b-a4b-it:free',
   'nvidia/nemotron-3-super-120b-a12b:free',
-  'meta-llama/llama-3.3-70b-instruct:free',
 ];
 
 async function callOpenRouter(key, model, messages, temperature) {
