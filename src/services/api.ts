@@ -25,6 +25,14 @@ export const api = {
   },
   teamStats: (team: string, sport = 'NBA') =>
     req<any>(`/stats?team=${encodeURIComponent(team)}&sport=${encodeURIComponent(sport)}`),
+  playerProps: (opts: { sport: string; eventId?: string; home?: string; away?: string }) => {
+    const q = new URLSearchParams()
+    q.set('sport', opts.sport)
+    if (opts.eventId) q.set('eventId', opts.eventId)
+    if (opts.home) q.set('home', opts.home)
+    if (opts.away) q.set('away', opts.away)
+    return req<{ source: string; props: any[]; note?: string }>(`/props?${q.toString()}`)
+  },
   generate: (prompt: string, sports: string[] = []) =>
     req<any>('/ai', { method: 'POST', body: JSON.stringify({ action: 'generate', prompt, sports }) }),
   analyze: (summary: string) =>

@@ -3,7 +3,7 @@ import { api } from '../services/api'
 
 const SPORTS = ['', 'NFL', 'NCAAF', 'NCAAB', 'NBA', 'MLB', 'NHL']
 
-function oddsLabel(n?: number) {
+function oddsLabel(n?: number | null) {
   if (n == null) return '—'
   return n > 0 ? `+${n}` : `${n}`
 }
@@ -49,6 +49,9 @@ export default function GamesPage() {
   const [toast, setToast] = useState('')
   const [showHelp, setShowHelp] = useState(true)
   const [teamInfo, setTeamInfo] = useState<any>(null)
+  const [propsData, setPropsData] = useState<any>(null)
+  const [propsLoading, setPropsLoading] = useState(false)
+  const [propFilter, setPropFilter] = useState('all')
 
   const load = async () => {
     setLoading(true)
@@ -72,6 +75,22 @@ export default function GamesPage() {
     setSelectedGame(g)
     setResult(null)
     setTeamInfo(null)
+    setPropsData(null)
+    setPropFilter('all')
+    setPropsLoading(true)
+    try {
+      const p = await api.playerProps({
+        sport: g.sport,
+        eventId: g.id,
+        home: g.home_team,
+        away: g.away_team,
+      })
+      setPropsData(p)
+    } catch (_) {
+      setPropsData({ props: [], source: 'error' })
+    } finally {
+      setPropsLoading(false)
+    }
     if ((g.sport || '').toUpperCase() === 'NBA') {
       try {
         const s = await api.teamStats(g.home_team, 'NBA')
@@ -119,9 +138,40 @@ export default function GamesPage() {
     }
   }
 
+  const trackProp = async (prop: any, side: 'over' | 'under') => {
+    if (!selectedGame) return
+    try {
+      await api.trackBet({
+        game_id: selectedGame.id,
+        sport: selectedGame.sport,
+        home_team: selectedGame.home_team,
+        away_team: selectedGame.away_team,
+        algorithm_id: 'player-prop',
+        algorithm_name: `${prop.player} ${prop.market_label}`,
+        recommended_side: side,
+        side: `${side} ${prop.line}`,
+        confidence: 0.5,
+        expected_value: 0,
+        stake_units: 1,
+        odds_taken: side === 'over' ? prop.over : prop.under,
+        status: 'pending',
+        placed_at: new Date().toISOString(),
+      })
+      setToast(`Saved ${prop.player} ${side.toUpperCase()} ${prop.line}`)
+      setTimeout(() => setToast(''), 2200)
+    } catch (e: any) {
+      setToast(e.message)
+    }
+  }
+
   if (selectedGame) {
     const books = selectedGame.books || {}
     const links = selectedGame.links || {}
+    const allProps = propsData?.props || []
+    const markets = Array.from(new Set(allProps.map((p: any) => p.market_label))) as string[]
+    const filtered =
+      propFilter === 'all' ? allProps : allProps.filter((p: any) => p.market_label === propFilter)
+
     return (
       <div className="space-y-3.5">
         <button
@@ -129,6 +179,7 @@ export default function GamesPage() {
           onClick={() => {
             setSelectedGame(null)
             setResult(null)
+            setPropsData(null)
           }}
           className="text-sky-400 text-sm font-medium"
         >
@@ -149,21 +200,91 @@ export default function GamesPage() {
 
         <div className="card space-y-1">
           <div className="flex items-center justify-between mb-1">
-            <p className="font-semibold">Live lines</p>
+            <p className="font-semibold">Game lines</p>
             <p className="text-[11px] text-zinc-500">FanDuel · DraftKings</p>
           </div>
           <BookRow name="FanDuel" data={books.fanduel || selectedGame.odds} color="#1493ff" />
           <BookRow name="DraftKings" data={books.draftkings} color="#53d337" />
-          <p className="hint text-[12px] pt-2">
-            <strong className="text-zinc-300">+150</strong> means bet $100 to win $150 profit.
-            <strong className="text-zinc-300"> −150</strong> means bet $150 to win $100.
-          </p>
+        </div>
+
+        <div className="card space-y-3">
+          <div>
+            <p className="font-semibold">Player bets</p>
+            <p className="hint text-[12px] mt-0.5">
+              Over / under on real player stats — same idea as FanDuel, DraftKings, and PrizePicks.
+            </p>
+          </div>
+          {props.length > 0 && (
+            <div className="flex gap-2 overflow-x-auto pb-1">
+              <button
+                type="button"
+                className={`chip ${propFilter === 'all' ? 'chip-on' : 'chip-off'}`}
+                onClick={() => setPropFilter('all')}
+              >
+                All
+              </button>
+              {markets.map((m) => (
+                <button
+                  key={m}
+                  type="button"
+                  className={`chip ${propFilter === m ? 'chip-on' : 'chip-off'}`}
+                  onClick={() => setPropFilter(m)}
+                >
+                  {m}
+                </button>
+              ))}
+            </div>
+          )}
+          {propsLoading && <p className="text-sm text-zinc-500">Loading player lines…</p>}
+          {!propsLoading && filtered.length === 0 && (
+            <p className="hint">No player lines for this game right now.</p>
+          )}
+          {propsData?.source === 'sample' && (
+            <p className="text-[11px] text-amber-400/90">
+              Sample player lines (live props need Odds API credits). Layout matches real Over/Under bets.
+            </p>
+          )}
+          {propsData?.source === 'the-odds-api' && (
+            <p className="text-[11px] text-emerald-400/90">Live player lines from sportsbooks</p>
+          )}
+          <div className="space-y-2">
+            {filtered.map((prop: any) => (
+              <div key={prop.id} className="card-soft space-y-2">
+                <div className="flex justify-between items-start gap-2">
+                  <div>
+                    <p className="font-semibold text-[15px]">{prop.player}</p>
+                    <p className="text-xs text-zinc-500">
+                      {prop.market_label} · {prop.book}
+                    </p>
+                  </div>
+                  <p className="text-lg font-semibold odds-num text-sky-300">{prop.line}</p>
+                </div>
+                <div className="grid grid-cols-2 gap-2">
+                  <button
+                    type="button"
+                    className="rounded-xl border border-emerald-500/30 bg-emerald-500/10 py-3 px-2 text-center"
+                    onClick={() => trackProp(prop, 'over')}
+                  >
+                    <p className="text-[11px] text-emerald-400/80 uppercase font-semibold">Over</p>
+                    <p className="font-bold odds-num text-emerald-300 mt-0.5">{oddsLabel(prop.over)}</p>
+                  </button>
+                  <button
+                    type="button"
+                    className="rounded-xl border border-rose-500/30 bg-rose-500/10 py-3 px-2 text-center"
+                    onClick={() => trackProp(prop, 'under')}
+                  >
+                    <p className="text-[11px] text-rose-400/80 uppercase font-semibold">Under</p>
+                    <p className="font-bold odds-num text-rose-300 mt-0.5">{oddsLabel(prop.under)}</p>
+                  </button>
+                </div>
+              </div>
+            ))}
+          </div>
         </div>
 
         {teamInfo?.recent_games?.length > 0 && (
           <div className="card space-y-2">
             <p className="font-semibold text-sm">Recent form · {teamInfo.team || selectedGame.home_team}</p>
-            <p className="hint text-[12px]">{teamInfo.note}</p>
             <ul className="text-sm space-y-1.5">
               {teamInfo.recent_games.slice(0, 5).map((g: any, i: number) => (
                 <li key={i} className="flex justify-between text-zinc-300">
@@ -192,12 +313,10 @@ export default function GamesPage() {
               PrizePicks
             </a>
           </div>
-          <p className="hint text-[11px]">Opens the site or app so you can place the bet. This app never places bets for you.</p>
         </div>
 
         <div className="space-y-2">
-          <p className="font-semibold px-0.5">Run a tool</p>
-          <p className="hint px-0.5 text-[12px]">Your NFL and NCAA engines show first when the sport matches.</p>
+          <p className="font-semibold px-0.5">Run a game tool</p>
           {algos.map((a) => (
             <button
               key={a.id}
@@ -237,15 +356,6 @@ export default function GamesPage() {
               </div>
             </div>
             <p className="text-sm text-zinc-300 leading-relaxed">{result.reasoning}</p>
-            {result.key_factors?.length > 0 && (
-              <div className="flex flex-wrap gap-1.5">
-                {result.key_factors.map((f: string, i: number) => (
-                  <span key={i} className="text-[11px] px-2 py-1 rounded-lg bg-sky-500/10 text-sky-300">
-                    {f}
-                  </span>
-                ))}
-              </div>
-            )}
             {result.recommended_side !== 'none' && (
               <button type="button" onClick={track} className="btn-primary">
                 Save to my bets
@@ -274,8 +384,8 @@ export default function GamesPage() {
             </button>
           </div>
           <ol className="hint space-y-1 list-decimal list-inside text-[13px]">
-            <li>Open Best for ranked picks across all tools</li>
-            <li>Or pick a game here and run one tool</li>
+            <li>Open a game for lines and player Over/Under bets</li>
+            <li>Or use Best for ranked game picks</li>
             <li>Save bets, then mark won or lost later</li>
           </ol>
         </div>
@@ -290,7 +400,7 @@ export default function GamesPage() {
       </div>
 
       {source === 'mock' && (
-        <p className="hint text-[12px] px-0.5">Sample games. Add ODDS_API_KEY under Setup for live books.</p>
+        <p className="hint text-[12px] px-0.5">Sample games when live odds credits are empty.</p>
       )}
       {source && source !== 'mock' && (
         <p className="text-[12px] text-emerald-400/90 px-0.5 font-medium">Live lines from sportsbooks</p>
