@@ -1,7 +1,12 @@
 /**
  * Post best picks to Discord as rich embeds.
- * Uses DISCORD_WEBHOOK_URL env, or body.webhook_url / app_settings.discord_webhook.
+ * Supports single webhook or per-league webhooks from app_settings.
+ * Default webhook can be DISCORD_WEBHOOK_URL env.
  */
+
+const DEFAULT_WEBHOOK =
+  process.env.DISCORD_WEBHOOK_URL ||
+  'https://discord.com/api/webhooks/1564027144898871338/Vu_tPC5-u5IniRiqO4CPCJuonZ9nAz459-xzvUxKd4asb4MtxYxbCHtsJ9awTKAlca7S';
 
 function fmtOdds(n) {
   if (n == null || Number.isNaN(Number(n))) return '—';
@@ -45,18 +50,16 @@ function groupByGame(picks) {
 function buildEmbeds({ picks, propsByGame, title }) {
   const groups = groupByGame(picks);
   const embeds = [];
-  const header = {
-    title: title || 'HelpBet · Daily best picks',
+  embeds.push({
+    title: title || 'HelpBet · Best picks',
     description: `Ranked tool picks · times in Central · ${new Date().toLocaleDateString('en-US', { timeZone: 'America/Chicago' })}`,
     color: 0x38bdf8,
     footer: { text: 'HelpBet · track results so tools learn' },
     timestamp: new Date().toISOString(),
-  };
-  embeds.push(header);
+  });
 
-  let i = 0;
   for (const [, list] of groups) {
-    if (embeds.length >= 9) break; // Discord max 10 embeds
+    if (embeds.length >= 9) break;
     list.sort((a, b) => (b.score || b.confidence || 0) - (a.score || a.confidence || 0));
     const top = list[0];
     const sport = top.sport || 'Sport';
@@ -77,20 +80,15 @@ function buildEmbeds({ picks, propsByGame, title }) {
       );
       if (p.reasoning) lines.push(`_${String(p.reasoning).slice(0, 140)}_`);
     }
-
-    // player props for this matchup if provided
     const propKey = `${sport}|${away}|${home}`;
-    const props = propsByGame?.[propKey] || propsByGame?.[top.game_id] || [];
+    const props = propsByGame?.[propKey] || [];
     if (props.length) {
       lines.push('');
       lines.push('**Player bets**');
       for (const pr of props.slice(0, 4)) {
-        lines.push(
-          `• ${pr.player} · ${pr.market_label || pr.market} **${pr.line}** (${pr.book || pr.source || 'prop'})`
-        );
+        lines.push(`• ${pr.player} · ${pr.market_label || pr.market} **${pr.line}** (${pr.book || 'prop'})`);
       }
     }
-
     embeds.push({
       title: `${sport}: ${away} @ ${home}`,
       description: lines.join('\n').slice(0, 4000),
@@ -98,47 +96,68 @@ function buildEmbeds({ picks, propsByGame, title }) {
       fields: [
         { name: 'Starts', value: when, inline: true },
         { name: 'League', value: sport, inline: true },
-        {
-          name: 'Top lean',
-          value: sideLabel(top.recommended_side, home, away),
-          inline: true,
-        },
+        { name: 'Top lean', value: sideLabel(top.recommended_side, home, away), inline: true },
       ],
     });
-    i += 1;
   }
-
   if (embeds.length === 1) {
     embeds.push({
       title: 'No strong picks yet',
-      description: 'Tools did not clear the confidence bar. Check HelpBet Games later.',
+      description: 'Tools did not clear the confidence bar.',
       color: 0x71717a,
     });
   }
   return embeds;
 }
 
-async function resolveWebhook(bodyWebhook) {
-  if (bodyWebhook && String(bodyWebhook).includes('discord.com/api/webhooks')) return bodyWebhook;
-  if (process.env.DISCORD_WEBHOOK_URL) return process.env.DISCORD_WEBHOOK_URL;
+async function loadNotifyConfig() {
   const supabaseUrl = process.env.VITE_SUPABASE_URL || process.env.SUPABASE_URL;
   const supabaseKey = process.env.VITE_SUPABASE_ANON_KEY || process.env.SUPABASE_ANON_KEY;
-  if (supabaseUrl && supabaseKey) {
-    try {
-      const r = await fetch(`${supabaseUrl}/rest/v1/app_settings?id=eq.default&select=discord_webhook`, {
-        headers: { apikey: supabaseKey, Authorization: `Bearer ${supabaseKey}` },
-      });
-      if (r.ok) {
-        const rows = await r.json();
-        if (rows[0]?.discord_webhook) return rows[0].discord_webhook;
-      }
-    } catch {}
+  const fallback = {
+    mode: 'single',
+    default_webhook: DEFAULT_WEBHOOK,
+    league_webhooks: {},
+    auto_post_leagues: ['NFL', 'NCAAF', 'NCAAB', 'NBA', 'MLB', 'NHL'],
+    auto_post_hour_ct: 6,
+  };
+  if (!supabaseUrl || !supabaseKey) return fallback;
+  try {
+    const r = await fetch(
+      `${supabaseUrl}/rest/v1/app_settings?id=eq.default&select=discord_webhook,notify_config`,
+      { headers: { apikey: supabaseKey, Authorization: `Bearer ${supabaseKey}` } }
+    );
+    if (!r.ok) return fallback;
+    const rows = await r.json();
+    const row = rows[0] || {};
+    const cfg = row.notify_config && typeof row.notify_config === 'object' ? row.notify_config : {};
+    return {
+      mode: cfg.mode === 'per_league' ? 'per_league' : 'single',
+      default_webhook: cfg.default_webhook || row.discord_webhook || DEFAULT_WEBHOOK,
+      league_webhooks: cfg.league_webhooks || {},
+      auto_post_leagues: Array.isArray(cfg.auto_post_leagues)
+        ? cfg.auto_post_leagues
+        : fallback.auto_post_leagues,
+      auto_post_hour_ct: Number(cfg.auto_post_hour_ct ?? 6),
+    };
+  } catch {
+    return fallback;
   }
-  return null;
+}
+
+async function postDiscord(webhook, embeds, content) {
+  const dr = await fetch(webhook, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ username: 'HelpBet', content: content || null, embeds }),
+  });
+  if (!dr.ok) {
+    const t = await dr.text();
+    throw new Error(`Discord ${dr.status}: ${t.slice(0, 200)}`);
+  }
 }
 
 async function fetchPicks(base) {
-  const r = await fetch(`${base}/api/best-bets?min_confidence=0.5&limit=25&persist=1`);
+  const r = await fetch(`${base}/api/best-bets?min_confidence=0.5&limit=30&persist=1`);
   if (!r.ok) throw new Error(`best-bets ${r.status}`);
   return r.json();
 }
@@ -177,43 +196,58 @@ export default async function handler(req, res) {
 
   try {
     const body = req.body || {};
-    const webhook = await resolveWebhook(body.webhook_url);
-    if (!webhook) {
-      return res.status(400).json({
-        error:
-          'No Discord webhook. Add DISCORD_WEBHOOK_URL in Vercel, or save discord_webhook in app_settings, or pass webhook_url.',
-      });
+    const cfg = await loadNotifyConfig();
+    const data = body.picks ? { picks: body.picks } : await fetchPicks(base);
+    let picks = data.picks || [];
+
+    // Filter leagues if requested
+    const leagues = body.leagues || cfg.auto_post_leagues;
+    if (Array.isArray(leagues) && leagues.length) {
+      const set = new Set(leagues.map((x) => String(x).toUpperCase()));
+      picks = picks.filter((p) => set.has(String(p.sport || '').toUpperCase()));
     }
 
-    const data = body.picks ? { picks: body.picks } : await fetchPicks(base);
-    const picks = data.picks || [];
     const propsByGame = await fetchPropsSample(base, picks);
-    const embeds = buildEmbeds({
-      picks,
-      propsByGame,
-      title: body.title || 'HelpBet · Best picks',
-    });
+    const results = [];
 
-    // Discord allows max 10 embeds per message
-    const chunk = embeds.slice(0, 10);
-    const dr = await fetch(webhook, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        username: 'HelpBet',
-        content: body.content || null,
-        embeds: chunk,
-      }),
-    });
-    if (!dr.ok) {
-      const t = await dr.text();
-      return res.status(502).json({ error: `Discord ${dr.status}: ${t.slice(0, 300)}` });
+    if (body.webhook_url) {
+      const embeds = buildEmbeds({ picks, propsByGame, title: body.title }).slice(0, 10);
+      await postDiscord(body.webhook_url, embeds, body.content);
+      results.push({ channel: 'override', embeds: embeds.length });
+    } else if (cfg.mode === 'per_league' && Object.keys(cfg.league_webhooks || {}).length) {
+      const byLeague = {};
+      for (const p of picks) {
+        const s = String(p.sport || 'OTHER').toUpperCase();
+        if (!byLeague[s]) byLeague[s] = [];
+        byLeague[s].push(p);
+      }
+      for (const [sport, list] of Object.entries(byLeague)) {
+        const wh = cfg.league_webhooks[sport] || cfg.default_webhook || DEFAULT_WEBHOOK;
+        if (!wh) continue;
+        const embeds = buildEmbeds({
+          picks: list,
+          propsByGame,
+          title: body.title || `HelpBet · ${sport}`,
+        }).slice(0, 10);
+        await postDiscord(wh, embeds, body.content || null);
+        results.push({ channel: sport, embeds: embeds.length, webhook_tail: String(wh).slice(-8) });
+      }
+    } else {
+      const wh = cfg.default_webhook || DEFAULT_WEBHOOK;
+      const embeds = buildEmbeds({
+        picks,
+        propsByGame,
+        title: body.title || 'HelpBet · Best picks',
+      }).slice(0, 10);
+      await postDiscord(wh, embeds, body.content || null);
+      results.push({ channel: 'default', embeds: embeds.length });
     }
 
     return res.status(200).json({
       ok: true,
-      embeds_sent: chunk.length,
+      mode: cfg.mode,
       picks: picks.length,
+      results,
       message: 'Posted rich embeds to Discord',
     });
   } catch (e) {
