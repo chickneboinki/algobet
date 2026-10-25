@@ -52,7 +52,7 @@ export default function SettingsPage() {
           {[
             ['Open the-odds-api.com and start the free plan'],
             ['Copy the API key from their email'],
-            ['In Vercel → algobet → Settings → Environment Variables, add ODDS_API_KEY'],
+            ['In Vercel → helpbet → Settings → Environment Variables, add ODDS_API_KEY'],
             ['Redeploy once, then refresh this app'],
           ].map((step, i) => (
             <li key={i} className="flex gap-3">

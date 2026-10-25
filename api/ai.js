@@ -12,7 +12,7 @@ async function callOpenRouter(key, model, messages, temperature) {
     headers: {
       Authorization: `Bearer ${key}`,
       'Content-Type': 'application/json',
-      'HTTP-Referer': 'https://algobet-bro-2917.vercel.app',
+      'HTTP-Referer': 'https://helpbet.vercel.app',
       'X-Title': 'HelpBet',
     },
     body: JSON.stringify({ model, temperature, messages }),

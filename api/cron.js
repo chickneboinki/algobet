@@ -12,7 +12,7 @@ export default async function handler(req, res) {
 
   const base = process.env.VERCEL_URL
     ? `https://${process.env.VERCEL_URL}`
-    : 'https://algobet-bro-2917.vercel.app';
+    : 'https://helpbet.vercel.app';
 
   const out = { at: new Date().toISOString(), steps: {} };
 
