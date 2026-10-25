@@ -1,17 +1,23 @@
 /**
- * Per-user Discord digests: ALL picks for the day, grouped by league,
- * DIFFERENT LEAGUE banners, colored embeds, FanDuel/DK/PrizePicks link buttons.
+ * Discord digest:
+ * 1) Pull live FanDuel/DK games
+ * 2) Drop games that already started
+ * 3) Split TODAY vs TOMORROW (Central)
+ * 4) Run tools → best lean per game
+ * 5) Post league-colored cards with book links + link-buttons
  */
 
 const LEAGUE_COLORS = {
   NFL: 0x013369,
-  NCAAF: 0xb45309,
-  NCAAB: 0x6d28d9,
+  NCAAF: 0xe87722,
+  NCAAB: 0x7c3aed,
   NBA: 0xc8102e,
   MLB: 0x002d72,
-  NHL: 0x111827,
+  NHL: 0x000000,
   DEFAULT: 0x38bdf8,
 };
+
+const LEAGUES = ['NFL', 'NBA', 'NCAAF', 'NCAAB', 'MLB', 'NHL'];
 
 function fmtOdds(n) {
   if (n == null || Number.isNaN(Number(n))) return '—';
@@ -32,104 +38,303 @@ function fmtWhen(iso) {
       timeZoneName: 'short',
     });
   } catch {
-    return iso;
+    return String(iso);
   }
+}
+
+function centralDateKey(iso) {
+  try {
+    return new Date(iso).toLocaleDateString('en-CA', { timeZone: 'America/Chicago' });
+  } catch {
+    return null;
+  }
+}
+
+function todayTomorrowKeys() {
+  const today = new Date().toLocaleDateString('en-CA', { timeZone: 'America/Chicago' });
+  // tomorrow in Central: add 24h to a noon-CT reference to avoid DST edge issues
+  const parts = today.split('-').map(Number);
+  const noonUtcGuess = Date.UTC(parts[0], parts[1] - 1, parts[2], 18, 0, 0);
+  const tomorrow = new Date(noonUtcGuess + 24 * 3600e3).toLocaleDateString('en-CA', {
+    timeZone: 'America/Chicago',
+  });
+  return { today, tomorrow };
 }
 
 function sideLabel(side, home, away) {
   if (side === 'home') return home || 'Home';
   if (side === 'away') return away || 'Away';
-  return side || '—';
+  return side || 'Pass';
 }
 
-function searchQ(away, home) {
-  return encodeURIComponent(`${away || ''} ${home || ''}`.trim());
+function stillUpcoming(iso) {
+  if (!iso) return true;
+  const t = new Date(iso).getTime();
+  if (!Number.isFinite(t)) return true;
+  // allow games that started < 3 hours ago only if marked live; default: must be in the future
+  return t > Date.now() - 2 * 60e3;
 }
 
-function bookLinks(p) {
-  const q = searchQ(p.away_team, p.home_team);
-  const fd = p.books?.fanduel || p.odds || {};
-  const dk = p.books?.draftkings || {};
+function bookUrls(p) {
+  const q = encodeURIComponent(`${p.away_team || ''} ${p.home_team || ''}`.trim());
   return {
-    fanduel: p.links?.fanduel || `https://sportsbook.fanduel.com/navigation/nfl?search=${q}`,
-    draftkings: p.links?.draftkings || `https://sportsbook.draftkings.com/sportsbook?search=${q}`,
-    prizepicks: p.links?.prizepicks || 'https://app.prizepicks.com/',
-    fd_ml: `FD ML ${fmtOdds(fd.ml_home)} / ${fmtOdds(fd.ml_away)}`,
-    dk_ml: `DK ML ${fmtOdds(dk.ml_home)} / ${fmtOdds(dk.ml_away)}`,
+    fanduel: (p.links?.fanduel || `https://sportsbook.fanduel.com/search?q=${q}`).slice(0, 500),
+    draftkings: (p.links?.draftkings || `https://sportsbook.draftkings.com/search?q=${q}`).slice(0, 500),
+    prizepicks: (p.links?.prizepicks || 'https://app.prizepicks.com/').slice(0, 500),
   };
 }
 
-function groupByLeagueThenGame(picks) {
-  const byLeague = new Map();
-  for (const p of picks || []) {
-    const league = String(p.sport || 'OTHER').toUpperCase();
-    if (!byLeague.has(league)) byLeague.set(league, new Map());
-    const games = byLeague.get(league);
-    const gkey = `${p.away_team}|${p.home_team}|${p.game_id || ''}`;
-    if (!games.has(gkey)) games.set(gkey, []);
-    games.get(gkey).push(p);
-  }
-  return byLeague;
+function americanToProb(odds) {
+  if (odds == null) return 0.5;
+  return odds > 0 ? 100 / (odds + 100) : Math.abs(odds) / (Math.abs(odds) + 100);
 }
 
-function isTodayCentral(iso) {
-  if (!iso) return true;
-  try {
-    const d = new Date(iso);
-    const today = new Date().toLocaleDateString('en-CA', { timeZone: 'America/Chicago' });
-    const day = d.toLocaleDateString('en-CA', { timeZone: 'America/Chicago' });
-    // include next ~36h so evening posts still catch tonight + tomorrow early
-    const diff = d.getTime() - Date.now();
-    return day === today || (diff > 0 && diff < 36 * 3600e3);
-  } catch {
-    return true;
+/** Lightweight tool suite so notify always evaluates without extra HTTP hops */
+function runToolsOnGame(game) {
+  const o = game.odds || {};
+  const books = game.books || {};
+  const mlH = o.ml_home ?? books.fanduel?.ml_home ?? books.draftkings?.ml_home ?? -110;
+  const mlA = o.ml_away ?? books.fanduel?.ml_away ?? books.draftkings?.ml_away ?? -110;
+  const results = [];
+
+  const hP = americanToProb(mlH);
+  const aP = americanToProb(mlA);
+  const aEV = 0.52 - aP;
+  const hEV = 0.48 - hP;
+  if (aEV > 0.03 && aEV >= hEV)
+    results.push({
+      algorithm_name: 'Underdog Value',
+      recommended_side: 'away',
+      confidence: Math.min(0.8, 0.5 + aEV * 2),
+      expected_value: aEV,
+      reasoning: `Away moneyline ${fmtOdds(mlA)} still shows edge after the book take.`,
+    });
+  else if (hEV > 0.03)
+    results.push({
+      algorithm_name: 'Underdog Value',
+      recommended_side: 'home',
+      confidence: Math.min(0.8, 0.5 + hEV * 2),
+      expected_value: hEV,
+      reasoning: `Home moneyline ${fmtOdds(mlH)} shows edge after the book take.`,
+    });
+
+  if (mlH >= 100 && mlH <= 180)
+    results.push({
+      algorithm_name: 'Home Underdog',
+      recommended_side: 'home',
+      confidence: 0.58,
+      expected_value: 0.04,
+      reasoning: `Home dog in the +100 to +180 band (${fmtOdds(mlH)}).`,
+    });
+
+  if (mlH <= -200)
+    results.push({
+      algorithm_name: 'Fade Heavy Favorite',
+      recommended_side: 'away',
+      confidence: 0.55,
+      expected_value: 0.03,
+      reasoning: `Home is a heavy favorite at ${fmtOdds(mlH)}. Fading the public side.`,
+    });
+  if (mlA <= -200)
+    results.push({
+      algorithm_name: 'Fade Heavy Favorite',
+      recommended_side: 'home',
+      confidence: 0.55,
+      expected_value: 0.03,
+      reasoning: `Away is a heavy favorite at ${fmtOdds(mlA)}. Fading the public side.`,
+    });
+
+  const fd = books.fanduel || {};
+  const dk = books.draftkings || {};
+  const fdSpr = fd.spread ?? fd.spread_home;
+  const dkSpr = dk.spread ?? dk.spread_home;
+  if (fdSpr != null && dkSpr != null && Math.abs(fdSpr - dkSpr) >= 1) {
+    const better = fdSpr > dkSpr ? 'home' : 'away';
+    results.push({
+      algorithm_name: 'Soft Line',
+      recommended_side: better,
+      confidence: 0.62,
+      expected_value: 0.045,
+      reasoning: `FanDuel and DraftKings disagree on the spread by ${Math.abs(fdSpr - dkSpr)} pts.`,
+    });
   }
+
+  const sport = (game.sport || '').toUpperCase();
+  if (['NBA', 'NFL', 'NHL', 'NCAAB', 'NCAAF'].includes(sport))
+    results.push({
+      algorithm_name: 'Home Edge',
+      recommended_side: 'home',
+      confidence: 0.52,
+      expected_value: 0.02,
+      reasoning: `Small home lean for ${sport} when other tools are quiet.`,
+    });
+
+  results.sort((a, b) => (b.confidence || 0) * (1 + (b.expected_value || 0)) - (a.confidence || 0) * (1 + (a.expected_value || 0)));
+  return results;
 }
 
 async function postDiscord(webhook, payload) {
-  const dr = await fetch(webhook, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ username: 'HelpBet', ...payload }),
-  });
-  if (!dr.ok) {
-    const t = await dr.text();
-    throw new Error(`Discord ${dr.status}: ${t.slice(0, 200)}`);
+  // Prefer components (real buttons). If Discord rejects, retry with links only in embed.
+  const attempt = async (body) => {
+    const dr = await fetch(webhook, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ username: 'HelpBet', allowed_mentions: { parse: [] }, ...body }),
+    });
+    const text = await dr.text();
+    return { ok: dr.ok, status: dr.status, text };
+  };
+
+  let r = await attempt(payload);
+  if (!r.ok && payload.components) {
+    const { components, ...rest } = payload;
+    r = await attempt(rest);
   }
+  if (!r.ok) throw new Error(`Discord ${r.status}: ${r.text.slice(0, 180)}`);
 }
 
-async function fetchPicks(base) {
-  try {
-    const r = await fetch(`${base}/api/best-bets?min_confidence=0.45&limit=80&persist=1`);
-    const text = await r.text();
-    if (!r.ok || text.trim().startsWith('<')) return { picks: [] };
-    return JSON.parse(text);
-  } catch {
-    return { picks: [] };
+function gameCardEmbed(game, tools, dayLabel) {
+  const sport = String(game.sport || 'SPORT').toUpperCase();
+  const color = LEAGUE_COLORS[sport] || LEAGUE_COLORS.DEFAULT;
+  const urls = bookUrls(game);
+  const fd = game.books?.fanduel || game.odds || {};
+  const dk = game.books?.draftkings || {};
+  const best = tools[0];
+
+  const lines = [];
+  lines.push(`**${dayLabel}** · ${fmtWhen(game.start_time || game.commence_time)}`);
+  lines.push('');
+  if (best) {
+    const team = sideLabel(best.recommended_side, game.home_team, game.away_team);
+    lines.push(`**Best lean: ${team}** (${best.recommended_side})`);
+    lines.push(`Tool: **${best.algorithm_name}**`);
+    lines.push(`How sure: **${Math.round((best.confidence || 0) * 100)}%** · Edge: **${((best.expected_value || 0) * 100).toFixed(1)}%**`);
+    lines.push('');
+    lines.push(`**Why:** ${best.reasoning}`);
+  } else {
+    lines.push('**Best lean:** Tools passed — no strong edge. Lines below for reference.');
   }
+  if (tools.length > 1) {
+    lines.push('');
+    lines.push('**Other tools**');
+    for (const t of tools.slice(1, 4)) {
+      lines.push(
+        `• ${t.algorithm_name}: ${sideLabel(t.recommended_side, game.home_team, game.away_team)} (${Math.round((t.confidence || 0) * 100)}%)`
+      );
+    }
+  }
+  lines.push('');
+  lines.push('**Live prices from the books**');
+  lines.push(`FanDuel ML: ${fmtOdds(fd.ml_home)} / ${fmtOdds(fd.ml_away)} · spread ${fd.spread ?? fd.spread_home ?? '—'} · total ${fd.total ?? '—'}`);
+  lines.push(`DraftKings ML: ${fmtOdds(dk.ml_home)} / ${fmtOdds(dk.ml_away)} · spread ${dk.spread ?? dk.spread_home ?? '—'} · total ${dk.total ?? '—'}`);
+  lines.push('');
+  lines.push('**Open this bet**');
+  lines.push(`[View on FanDuel](${urls.fanduel})`);
+  lines.push(`[View on DraftKings](${urls.draftkings})`);
+  lines.push(`[View on PrizePicks](${urls.prizepicks})`);
+
+  const components = [
+    {
+      type: 1,
+      components: [
+        { type: 2, style: 5, label: 'View on FanDuel', url: urls.fanduel },
+        { type: 2, style: 5, label: 'View on DraftKings', url: urls.draftkings },
+        { type: 2, style: 5, label: 'View on PrizePicks', url: urls.prizepicks },
+      ],
+    },
+  ];
+
+  return {
+    embeds: [
+      {
+        title: `${sport}: ${game.away_team} @ ${game.home_team}`,
+        description: lines.join('\n').slice(0, 4000),
+        color,
+        fields: [
+          { name: 'Starts (CT)', value: fmtWhen(game.start_time || game.commence_time), inline: true },
+          { name: 'League', value: sport, inline: true },
+          {
+            name: 'Best side',
+            value: best ? sideLabel(best.recommended_side, game.home_team, game.away_team) : 'None',
+            inline: true,
+          },
+        ],
+        footer: { text: 'HelpBet · tools ran on FanDuel + DraftKings lines' },
+      },
+    ],
+    components,
+  };
 }
 
-async function fetchPropsSample(base, picks) {
-  const propsByGame = {};
-  const seen = new Set();
-  for (const p of (picks || []).slice(0, 12)) {
-    const key = `${p.sport}|${p.away_team}|${p.home_team}`;
-    if (seen.has(key)) continue;
-    seen.add(key);
+async function loadGames(base) {
+  const all = [];
+  for (const sport of LEAGUES) {
     try {
-      const q = new URLSearchParams({
-        sport: p.sport || 'NFL',
-        home: p.home_team || '',
-        away: p.away_team || '',
-      });
-      const r = await fetch(`${base}/api/props?${q}`);
+      const r = await fetch(`${base}/api/games?sport=${sport}`);
       const text = await r.text();
       if (!r.ok || text.trim().startsWith('<')) continue;
       const data = JSON.parse(text);
-      propsByGame[key] = (data.props || []).slice(0, 5);
+      for (const g of data.games || []) all.push({ ...g, sport: g.sport || sport });
     } catch {}
   }
-  return propsByGame;
+  return all;
+}
+
+async function sendSection({ webhook, games, dayLabel, banner }) {
+  if (!games.length) {
+    await postDiscord(webhook, {
+      embeds: [
+        {
+          title: banner,
+          description: `No upcoming ${dayLabel.toLowerCase()} games with lines right now.`,
+          color: 0x71717a,
+        },
+      ],
+    });
+    return 0;
+  }
+
+  await postDiscord(webhook, {
+    content: `**════════ ${banner} ════════**`,
+    embeds: [
+      {
+        title: banner,
+        description: `${games.length} upcoming game(s). Tools already ran on each card.`,
+        color: dayLabel === 'TODAY' ? 0x22c55e : 0x3b82f6,
+      },
+    ],
+  });
+
+  // Group by league for DIFFERENT LEAGUE banners
+  const byLeague = new Map();
+  for (const g of games) {
+    const L = String(g.sport || 'OTHER').toUpperCase();
+    if (!byLeague.has(L)) byLeague.set(L, []);
+    byLeague.get(L).push(g);
+  }
+
+  let n = 0;
+  for (const [league, list] of [...byLeague.entries()].sort((a, b) => a[0].localeCompare(b[0]))) {
+    await postDiscord(webhook, {
+      content: `**——— DIFFERENT LEAGUE: ${league} ———**`,
+      embeds: [
+        {
+          title: `${league} · ${dayLabel}`,
+          description: `${list.length} game(s)`,
+          color: LEAGUE_COLORS[league] || LEAGUE_COLORS.DEFAULT,
+        },
+      ],
+    });
+
+    for (const game of list) {
+      const tools = runToolsOnGame(game);
+      const card = gameCardEmbed(game, tools, dayLabel);
+      await postDiscord(webhook, card);
+      n += 1;
+      if (n % 3 === 0) await new Promise((r) => setTimeout(r, 600));
+    }
+  }
+  return n;
 }
 
 async function loadUserConfig(username) {
@@ -154,124 +359,63 @@ async function listUsersWithWebhooks() {
     { headers: { apikey: supabaseKey, Authorization: `Bearer ${supabaseKey}` } }
   );
   if (!r.ok) return [];
-  const rows = await r.json();
-  return (rows || []).filter((u) => u.discord_webhook && String(u.discord_webhook).includes('discord.com'));
+  return (await r.json()).filter((u) => String(u.discord_webhook || '').includes('discord.com'));
 }
 
-async function sendDigest({ webhook, picks, propsByGame, title, mode, league_webhooks }) {
-  const dayPicks = picks.filter((p) => isTodayCentral(p.start_time || p.commence_time));
-  const byLeague = groupByLeagueThenGame(dayPicks.length ? dayPicks : picks);
-  const leagues = [...byLeague.keys()].sort();
-  const results = [];
-
-  if (!leagues.length) {
-    await postDiscord(webhook, {
-      content: null,
-      embeds: [
-        {
-          title: title || 'HelpBet · Today',
-          description: 'No ranked picks cleared the bar for today yet.',
-          color: LEAGUE_COLORS.DEFAULT,
-        },
-      ],
-    });
-    return [{ channel: 'empty', embeds: 1 }];
+async function runDigest(webhook, base, leaguesFilter) {
+  let games = await loadGames(base);
+  // upcoming only
+  games = games.filter((g) => stillUpcoming(g.start_time || g.commence_time));
+  if (Array.isArray(leaguesFilter) && leaguesFilter.length) {
+    const set = new Set(leaguesFilter.map((x) => String(x).toUpperCase()));
+    games = games.filter((g) => set.has(String(g.sport || '').toUpperCase()));
   }
 
-  for (let li = 0; li < leagues.length; li++) {
-    const league = leagues[li];
-    const games = byLeague.get(league);
-    const color = LEAGUE_COLORS[league] || LEAGUE_COLORS.DEFAULT;
-    const targetWh =
-      mode === 'per_league' && league_webhooks?.[league] ? league_webhooks[league] : webhook;
+  const { today, tomorrow } = todayTomorrowKeys();
+  const todayGames = games
+    .filter((g) => centralDateKey(g.start_time || g.commence_time) === today)
+    .sort((a, b) => new Date(a.start_time || 0) - new Date(b.start_time || 0));
+  const tomorrowGames = games
+    .filter((g) => centralDateKey(g.start_time || g.commence_time) === tomorrow)
+    .sort((a, b) => new Date(a.start_time || 0) - new Date(b.start_time || 0));
 
-    // Banner message
-    await postDiscord(targetWh, {
-      content: `**——— DIFFERENT LEAGUE: ${league} ———**`,
-      embeds: [
-        {
-          title: `${league} PICKS`,
-          description: `${games.size} game(s) · Central times`,
-          color,
-        },
-      ],
-    });
+  const nToday = await sendSection({
+    webhook,
+    games: todayGames,
+    dayLabel: 'TODAY',
+    banner: 'TODAY — UPCOMING ONLY',
+  });
 
-    let gameIndex = 0;
-    for (const [, list] of games) {
-      list.sort((a, b) => (b.score || b.confidence || 0) - (a.score || a.confidence || 0));
-      const top = list[0];
-      const away = top.away_team;
-      const home = top.home_team;
-      const links = bookLinks(top);
-      const lines = [];
-      for (const p of list.slice(0, 5)) {
-        const team = sideLabel(p.recommended_side, home, away);
-        lines.push(
-          `**${team}** · ${p.algorithm_name} · ${Math.round((p.confidence || 0) * 100)}% · edge ${((p.expected_value || 0) * 100).toFixed(1)}%`
-        );
-        if (p.reasoning) lines.push(`_${String(p.reasoning).slice(0, 120)}_`);
-      }
-      const propKey = `${league}|${away}|${home}`;
-      const props = propsByGame[propKey] || [];
-      if (props.length) {
-        lines.push('');
-        lines.push('**Player bets**');
-        for (const pr of props.slice(0, 4)) {
-          lines.push(`• ${pr.player} ${pr.market_label || pr.market} **${pr.line}**`);
-        }
-      }
-      lines.push('');
-      lines.push(`${links.fd_ml}`);
-      lines.push(`${links.dk_ml}`);
-
-      const embeds = [
-        {
-          title: `${league}: ${away} @ ${home}`,
-          description: lines.join('\n').slice(0, 3900),
-          color,
-          fields: [
-            { name: 'Starts', value: fmtWhen(top.start_time || top.commence_time), inline: true },
-            { name: 'League', value: league, inline: true },
-            { name: 'Top lean', value: sideLabel(top.recommended_side, home, away), inline: true },
-          ],
-        },
-      ];
-
-      // Link buttons (open books privately in the user's browser — no shared channel leak)
-      const components = [
-        {
-          type: 1,
-          components: [
-            { type: 2, style: 5, label: 'View on FanDuel', url: links.fanduel.slice(0, 512) },
-            { type: 2, style: 5, label: 'View on DraftKings', url: links.draftkings.slice(0, 512) },
-            { type: 2, style: 5, label: 'View on PrizePicks', url: links.prizepicks.slice(0, 512) },
-          ],
-        },
-      ];
-
-      await postDiscord(targetWh, { embeds, components });
-      gameIndex += 1;
-      results.push({ league, game: `${away}@${home}` });
-      // soft rate limit
-      if (gameIndex % 4 === 0) await new Promise((r) => setTimeout(r, 800));
-    }
-  }
-
-  // End banner on primary webhook
   await postDiscord(webhook, {
     embeds: [
       {
         title: 'THIS IS ALL BETS FOR TODAY',
-        description: `Finished posting **${results.length}** game card(s) across **${leagues.length}** league(s). Track results in HelpBet so tools learn.`,
+        description: `Posted **${nToday}** upcoming game card(s) for **${today}** (Central). Past tip-offs were skipped.`,
         color: 0x22c55e,
-        footer: { text: 'HelpBet daily card' },
+      },
+    ],
+  });
+
+  const nTom = await sendSection({
+    webhook,
+    games: tomorrowGames,
+    dayLabel: 'TOMORROW',
+    banner: 'TOMORROW — FULL SLATE',
+  });
+
+  await postDiscord(webhook, {
+    embeds: [
+      {
+        title: 'THIS IS ALL BETS FOR TOMORROW',
+        description: `Posted **${nTom}** game card(s) for **${tomorrow}** (Central). Tools ran on FanDuel + DraftKings lines before each send.`,
+        color: 0x3b82f6,
+        footer: { text: 'HelpBet complete' },
         timestamp: new Date().toISOString(),
       },
     ],
   });
 
-  return results;
+  return { today: nToday, tomorrow: nTom, scanned: games.length };
 }
 
 export default async function handler(req, res) {
@@ -284,32 +428,14 @@ export default async function handler(req, res) {
 
   try {
     const body = req.body || {};
-    const data = body.picks ? { picks: body.picks } : await fetchPicks(base);
-    let picks = data.picks || [];
-    const propsByGame = await fetchPropsSample(base, picks);
 
-    // Cron: fan-out to every user who saved their own webhook
     if (body.all_users || req.query.all_users === '1') {
       const users = await listUsersWithWebhooks();
       const out = [];
       for (const u of users) {
-        const cfg = u.notify_config || {};
-        const leagues = cfg.auto_post_leagues;
-        let userPicks = picks;
-        if (Array.isArray(leagues) && leagues.length) {
-          const set = new Set(leagues.map((x) => String(x).toUpperCase()));
-          userPicks = picks.filter((p) => set.has(String(p.sport || '').toUpperCase()));
-        }
         try {
-          const r = await sendDigest({
-            webhook: u.discord_webhook,
-            picks: userPicks,
-            propsByGame,
-            title: `HelpBet · ${u.username} · Today`,
-            mode: cfg.mode,
-            league_webhooks: cfg.league_webhooks,
-          });
-          out.push({ username: u.username, ok: true, cards: r.length });
+          const stats = await runDigest(u.discord_webhook, base, u.notify_config?.auto_post_leagues);
+          out.push({ username: u.username, ok: true, ...stats });
         } catch (e) {
           out.push({ username: u.username, ok: false, error: e.message });
         }
@@ -317,50 +443,24 @@ export default async function handler(req, res) {
       return res.status(200).json({ ok: true, mode: 'all_users', users: out });
     }
 
-    // Single send: require explicit webhook or logged-in user settings
     let webhook = body.webhook_url || null;
-    let mode = 'single';
-    let league_webhooks = {};
     let leaguesFilter = body.leagues;
-
-    if (body.username) {
+    if (body.username && !webhook) {
       const us = await loadUserConfig(body.username);
-      if (!us?.discord_webhook) {
-        return res.status(400).json({
-          error: 'No webhook on this account. Add one in Setup (each person has their own).',
-        });
-      }
+      if (!us?.discord_webhook)
+        return res.status(400).json({ error: 'No webhook on this account. Add one in Setup.' });
       webhook = us.discord_webhook;
-      mode = us.notify_config?.mode || 'single';
-      league_webhooks = us.notify_config?.league_webhooks || {};
       if (!leaguesFilter) leaguesFilter = us.notify_config?.auto_post_leagues;
     }
-
     if (!webhook || !String(webhook).includes('discord.com')) {
-      return res.status(400).json({
-        error: 'Log in and save YOUR Discord webhook in Setup first. New accounts start with no webhook.',
-      });
+      return res.status(400).json({ error: 'Pass webhook_url or log in and save your webhook in Setup.' });
     }
 
-    if (Array.isArray(leaguesFilter) && leaguesFilter.length) {
-      const set = new Set(leaguesFilter.map((x) => String(x).toUpperCase()));
-      picks = picks.filter((p) => set.has(String(p.sport || '').toUpperCase()));
-    }
-
-    const results = await sendDigest({
-      webhook,
-      picks,
-      propsByGame,
-      title: body.title || 'HelpBet · All bets for today',
-      mode,
-      league_webhooks,
-    });
-
+    const stats = await runDigest(webhook, base, leaguesFilter);
     return res.status(200).json({
       ok: true,
-      picks: picks.length,
-      cards: results.length,
-      message: 'Posted all bets for today (grouped by league)',
+      message: 'Posted TODAY then TOMORROW digests with tools + book buttons',
+      ...stats,
     });
   } catch (e) {
     return res.status(500).json({ error: e.message || String(e) });
