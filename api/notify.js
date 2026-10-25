@@ -1,7 +1,6 @@
 /**
  * Post best picks to Discord as rich embeds.
  * Supports single webhook or per-league webhooks from app_settings.
- * Default webhook can be DISCORD_WEBHOOK_URL env.
  */
 
 const DEFAULT_WEBHOOK =
@@ -103,7 +102,7 @@ function buildEmbeds({ picks, propsByGame, title }) {
   if (embeds.length === 1) {
     embeds.push({
       title: 'No strong picks yet',
-      description: 'Tools did not clear the confidence bar.',
+      description: 'Tools did not clear the confidence bar — or lines are still loading.',
       color: 0x71717a,
     });
   }
@@ -157,9 +156,19 @@ async function postDiscord(webhook, embeds, content) {
 }
 
 async function fetchPicks(base) {
-  const r = await fetch(`${base}/api/best-bets?min_confidence=0.5&limit=30&persist=1`);
-  if (!r.ok) throw new Error(`best-bets ${r.status}`);
-  return r.json();
+  try {
+    const r = await fetch(`${base}/api/best-bets?min_confidence=0.5&limit=30&persist=1`);
+    const text = await r.text();
+    if (!r.ok) return { picks: [] };
+    if (text.trim().startsWith('<')) return { picks: [] };
+    try {
+      return JSON.parse(text);
+    } catch {
+      return { picks: [] };
+    }
+  } catch {
+    return { picks: [] };
+  }
 }
 
 async function fetchPropsSample(base, picks) {
@@ -177,7 +186,9 @@ async function fetchPropsSample(base, picks) {
       });
       const r = await fetch(`${base}/api/props?${q}`);
       if (!r.ok) continue;
-      const data = await r.json();
+      const text = await r.text();
+      if (text.trim().startsWith('<')) continue;
+      const data = JSON.parse(text);
       propsByGame[key] = (data.props || []).slice(0, 6);
     } catch {}
   }
@@ -190,9 +201,8 @@ export default async function handler(req, res) {
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
   if (req.method === 'OPTIONS') return res.status(200).end();
 
-  const base = process.env.VERCEL_URL
-    ? `https://${process.env.VERCEL_URL}`
-    : process.env.APP_URL || 'https://helpbet.vercel.app';
+  // Prefer public production URL (deployment URLs may be SSO-protected)
+  const base = process.env.APP_URL || 'https://helpbet.vercel.app';
 
   try {
     const body = req.body || {};
@@ -200,7 +210,6 @@ export default async function handler(req, res) {
     const data = body.picks ? { picks: body.picks } : await fetchPicks(base);
     let picks = data.picks || [];
 
-    // Filter leagues if requested
     const leagues = body.leagues || cfg.auto_post_leagues;
     if (Array.isArray(leagues) && leagues.length) {
       const set = new Set(leagues.map((x) => String(x).toUpperCase()));
@@ -221,7 +230,9 @@ export default async function handler(req, res) {
         if (!byLeague[s]) byLeague[s] = [];
         byLeague[s].push(p);
       }
-      for (const [sport, list] of Object.entries(byLeague)) {
+      const sports = Object.keys(byLeague).length ? Object.keys(byLeague) : ['ALL'];
+      for (const sport of sports) {
+        const list = byLeague[sport] || [];
         const wh = cfg.league_webhooks[sport] || cfg.default_webhook || DEFAULT_WEBHOOK;
         if (!wh) continue;
         const embeds = buildEmbeds({
@@ -230,7 +241,7 @@ export default async function handler(req, res) {
           title: body.title || `HelpBet · ${sport}`,
         }).slice(0, 10);
         await postDiscord(wh, embeds, body.content || null);
-        results.push({ channel: sport, embeds: embeds.length, webhook_tail: String(wh).slice(-8) });
+        results.push({ channel: sport, embeds: embeds.length });
       }
     } else {
       const wh = cfg.default_webhook || DEFAULT_WEBHOOK;
