@@ -39,14 +39,24 @@ export default function GamesPage() {
   const [propsNote, setPropsNote] = useState('')
   const [toast, setToast] = useState('')
 
+  // tools + AI on game
+  const [algos, setAlgos] = useState<any[]>([])
+  const [toolResults, setToolResults] = useState<any[]>([])
+  const [runningAll, setRunningAll] = useState(false)
+  const [runningId, setRunningId] = useState<string | null>(null)
+  const [chatInput, setChatInput] = useState('')
+  const [chatLog, setChatLog] = useState<{ role: string; text: string }[]>([])
+  const [chatBusy, setChatBusy] = useState(false)
+
   const load = async () => {
     setLoading(true)
     setError('')
     try {
-      const g = await api.games(sport)
+      const [g, a] = await Promise.all([api.games(sport), api.algorithms().catch(() => [])])
       setGames(Array.isArray(g?.games) ? g.games : [])
       setSource(g?.source || '')
       setNote(g?.note || '')
+      setAlgos(Array.isArray(a) ? a : [])
     } catch (e: any) {
       setError(String(e?.message || e || 'Load failed'))
       setGames([])
@@ -63,6 +73,9 @@ export default function GamesPage() {
     setSelected(g)
     setPropsList([])
     setPropsNote('')
+    setToolResults([])
+    setChatLog([])
+    setChatInput('')
     setPropsLoading(true)
     try {
       const p = await api.playerProps({
@@ -77,6 +90,94 @@ export default function GamesPage() {
       setPropsList([])
     } finally {
       setPropsLoading(false)
+    }
+  }
+
+  const runOne = async (algoId: string) => {
+    if (!selected) return
+    setRunningId(algoId)
+    try {
+      const r = await api.runAlgo(algoId, selected)
+      setToolResults((prev) => {
+        const rest = prev.filter((x) => x.algorithm_id !== algoId)
+        return [...rest, r]
+      })
+    } catch (e: any) {
+      setToast(String(e?.message || 'Tool failed'))
+      setTimeout(() => setToast(''), 2500)
+    } finally {
+      setRunningId(null)
+    }
+  }
+
+  const runAllTools = async () => {
+    if (!selected || !algos.length) return
+    setRunningAll(true)
+    const results: any[] = []
+    for (const a of algos) {
+      try {
+        const r = await api.runAlgo(a.id, selected)
+        results.push(r)
+      } catch {
+        /* skip */
+      }
+    }
+    setToolResults(results)
+    setRunningAll(false)
+
+    // auto AI summary after tools
+    try {
+      setChatBusy(true)
+      const ans = await api.chatGame(selected, results, 'Explain this game and the best bet based on these tools.')
+      setChatLog([
+        { role: 'you', text: 'Explain this game and best bet from the tools' },
+        { role: 'ai', text: ans.reply || JSON.stringify(ans) },
+      ])
+    } catch (e: any) {
+      setChatLog([{ role: 'ai', text: String(e?.message || 'AI chat failed') }])
+    } finally {
+      setChatBusy(false)
+    }
+  }
+
+  const sendChat = async () => {
+    if (!selected || !chatInput.trim()) return
+    const q = chatInput.trim()
+    setChatInput('')
+    setChatLog((p) => [...p, { role: 'you', text: q }])
+    setChatBusy(true)
+    try {
+      const ans = await api.chatGame(selected, toolResults, q)
+      setChatLog((p) => [...p, { role: 'ai', text: ans.reply || JSON.stringify(ans) }])
+    } catch (e: any) {
+      setChatLog((p) => [...p, { role: 'ai', text: String(e?.message || 'Failed') }])
+    } finally {
+      setChatBusy(false)
+    }
+  }
+
+  const saveResult = async (result: any) => {
+    if (!selected || !result || result.recommended_side === 'none') return
+    try {
+      await api.trackBet({
+        game_id: selected.id,
+        sport: selected.sport,
+        home_team: selected.home_team,
+        away_team: selected.away_team,
+        algorithm_id: result.algorithm_id,
+        algorithm_name: result.algorithm_name,
+        recommended_side: result.recommended_side,
+        side: result.recommended_side,
+        confidence: result.confidence,
+        expected_value: result.expected_value,
+        stake_units: result.suggested_stake_units || 1,
+        status: 'pending',
+        placed_at: new Date().toISOString(),
+      })
+      setToast('Saved to My Bets')
+      setTimeout(() => setToast(''), 2000)
+    } catch (e: any) {
+      setToast(String(e?.message || 'Save failed'))
     }
   }
 
@@ -103,15 +204,14 @@ export default function GamesPage() {
       setTimeout(() => setToast(''), 2000)
     } catch (e: any) {
       setToast(String(e?.message || 'Save failed'))
-      setTimeout(() => setToast(''), 2500)
     }
   }
 
-  // ——— DETAIL (Games tab click) ———
   if (selected) {
     const books = selected.books || {}
     const bets = Array.isArray(selected.bets) ? selected.bets : []
     const when = formatWhen(selected.start_time || selected.commence_time)
+    const picks = toolResults.filter((t) => t.recommended_side && t.recommended_side !== 'none')
 
     return (
       <div className="space-y-4 pb-8">
@@ -125,18 +225,11 @@ export default function GamesPage() {
           <p className="text-zinc-500 text-sm">at</p>
           <p className="text-lg font-semibold leading-snug">{selected.home_team || 'Home'}</p>
           <p className="text-sky-300 font-medium text-sm pt-1">{when}</p>
-          {selected.status ? <p className="text-xs text-zinc-500">{selected.status}</p> : null}
         </div>
 
-        {/* On-site book lines — FanDuel / DraftKings */}
+        {/* Lines */}
         <div className="card space-y-3">
           <p className="font-semibold">Live lines on this site</p>
-          <p className="hint text-xs">Pulled from FanDuel and DraftKings — not a link away.</p>
-
-          {Object.keys(books).length === 0 && bets.length === 0 && (
-            <p className="text-sm text-zinc-400">No game lines for this matchup yet.</p>
-          )}
-
           {Object.entries(books).map(([key, b]: [string, any]) => (
             <div key={key} className="rounded-xl border border-white/10 bg-white/[0.04] p-3 space-y-2">
               <p
@@ -148,93 +241,145 @@ export default function GamesPage() {
               <div className="grid grid-cols-2 gap-2 text-sm">
                 <div className="rounded-lg bg-black/30 p-2 text-center">
                   <p className="text-[10px] text-zinc-500 uppercase">Home ML</p>
-                  <p className="font-bold odds-num text-base">{oddsLabel(b?.ml_home)}</p>
-                  <p className="text-[11px] text-zinc-500 truncate">{selected.home_team}</p>
+                  <p className="font-bold odds-num">{oddsLabel(b?.ml_home)}</p>
                 </div>
                 <div className="rounded-lg bg-black/30 p-2 text-center">
                   <p className="text-[10px] text-zinc-500 uppercase">Away ML</p>
-                  <p className="font-bold odds-num text-base">{oddsLabel(b?.ml_away)}</p>
-                  <p className="text-[11px] text-zinc-500 truncate">{selected.away_team}</p>
+                  <p className="font-bold odds-num">{oddsLabel(b?.ml_away)}</p>
                 </div>
                 <div className="rounded-lg bg-black/30 p-2 text-center">
                   <p className="text-[10px] text-zinc-500 uppercase">Spread</p>
-                  <p className="font-bold odds-num text-base">{b?.spread != null ? oddsLabel(b.spread) : '—'}</p>
+                  <p className="font-bold odds-num">{b?.spread != null ? oddsLabel(b.spread) : '—'}</p>
                 </div>
                 <div className="rounded-lg bg-black/30 p-2 text-center">
-                  <p className="text-[10px] text-zinc-500 uppercase">Total O/U</p>
-                  <p className="font-bold odds-num text-base">{b?.total != null ? b.total : '—'}</p>
+                  <p className="text-[10px] text-zinc-500 uppercase">Total</p>
+                  <p className="font-bold odds-num">{b?.total != null ? b.total : '—'}</p>
                 </div>
               </div>
             </div>
           ))}
+          {bets.slice(0, 12).map((bet: any, i: number) => (
+            <div key={i} className="flex justify-between text-sm border-b border-white/5 py-1.5">
+              <span className="text-zinc-400 truncate">
+                {bet.book} · {bet.market} · {bet.selection}
+                {bet.line != null ? ` ${bet.line}` : ''}
+              </span>
+              <span className="odds-num text-sky-300 font-semibold">{oddsLabel(bet.odds)}</span>
+            </div>
+          ))}
+        </div>
 
-          {bets.length > 0 && (
-            <div className="space-y-1.5 pt-1">
-              <p className="text-xs font-semibold text-zinc-400 uppercase">All bets from books</p>
-              {bets.map((bet: any, i: number) => (
-                <div
-                  key={i}
-                  className="flex items-center justify-between gap-2 rounded-lg border border-white/5 bg-white/[0.03] px-3 py-2 text-sm"
-                >
-                  <div className="min-w-0">
-                    <p className="font-medium truncate">{bet.selection}</p>
-                    <p className="text-[11px] text-zinc-500">
-                      {bet.book} · {bet.market}
-                      {bet.line != null ? ` · ${bet.line}` : ''}
-                    </p>
-                  </div>
-                  <p className="font-bold odds-num text-sky-300 shrink-0">{oddsLabel(bet.odds)}</p>
+        {/* Run tools */}
+        <div className="card space-y-3">
+          <div className="flex items-center justify-between gap-2">
+            <div>
+              <p className="font-semibold">Run tools (algorithms)</p>
+              <p className="hint text-xs">Each tool scores this game. Then AI can explain the best lean.</p>
+            </div>
+            <button type="button" className="btn-primary text-sm shrink-0" disabled={runningAll} onClick={runAllTools}>
+              {runningAll ? 'Running…' : 'Run all'}
+            </button>
+          </div>
+          <div className="space-y-2">
+            {algos.map((a) => (
+              <button
+                key={a.id}
+                type="button"
+                disabled={runningId === a.id || runningAll}
+                onClick={() => runOne(a.id)}
+                className="w-full text-left rounded-xl border border-white/10 bg-white/[0.03] px-3 py-2.5 disabled:opacity-50"
+              >
+                <div className="flex justify-between">
+                  <span className="font-medium text-sm">{a.name}</span>
+                  <span className="text-sky-400 text-sm">{runningId === a.id ? '…' : 'Run'}</span>
+                </div>
+                <p className="text-[11px] text-zinc-500 mt-0.5 line-clamp-1">{a.description}</p>
+              </button>
+            ))}
+          </div>
+
+          {picks.length > 0 && (
+            <div className="space-y-2 pt-1">
+              <p className="text-xs font-semibold text-emerald-400 uppercase">Tool picks</p>
+              {picks.map((r) => (
+                <div key={r.algorithm_id} className="rounded-xl border border-emerald-500/20 bg-emerald-500/5 p-3 space-y-2">
+                  <p className="font-semibold text-sm">
+                    {r.algorithm_name}: <span className="uppercase text-sky-300">{r.recommended_side}</span>
+                  </p>
+                  <p className="text-xs text-zinc-400">
+                    Sure {Math.round((r.confidence || 0) * 100)}% · Edge {((r.expected_value || 0) * 100).toFixed(1)}%
+                  </p>
+                  <p className="text-sm text-zinc-300">{r.reasoning}</p>
+                  <button type="button" className="btn-ghost text-sm w-full" onClick={() => saveResult(r)}>
+                    Save this pick
+                  </button>
                 </div>
               ))}
             </div>
           )}
+          {toolResults.length > 0 && picks.length === 0 && (
+            <p className="text-sm text-zinc-400">Tools ran — no strong edge (they passed).</p>
+          )}
         </div>
 
-        {/* Player props on-site */}
+        {/* AI chat */}
         <div className="card space-y-3">
-          <p className="font-semibold">Player bets (PrizePicks / Underdog)</p>
-          <p className="hint text-xs">Shown here on AlgoBet — over/under lines pulled live.</p>
-          {propsLoading && <p className="text-sm text-zinc-500">Loading player lines…</p>}
-          {propsNote && <p className="text-[11px] text-zinc-500">{propsNote}</p>}
-          {!propsLoading && propsList.length === 0 && (
-            <p className="text-sm text-zinc-400">No player lines for this game filter right now.</p>
-          )}
-          <div className="space-y-2">
-            {propsList.slice(0, 50).map((prop: any) => (
+          <p className="font-semibold">AI on this game</p>
+          <p className="hint text-xs">Ask what the tools mean, or get a plain-English best bet.</p>
+          <div className="space-y-2 max-h-64 overflow-y-auto">
+            {chatLog.length === 0 && (
+              <p className="text-sm text-zinc-500">Tap “Run all” above, or type a question.</p>
+            )}
+            {chatLog.map((m, i) => (
               <div
-                key={prop.id || `${prop.player}-${prop.line}-${prop.market}`}
-                className="rounded-xl border border-white/10 bg-white/[0.04] p-3 space-y-2"
+                key={i}
+                className={`rounded-xl px-3 py-2 text-sm ${m.role === 'you' ? 'bg-sky-500/15 text-sky-100 ml-6' : 'bg-white/5 text-zinc-200 mr-4'}`}
               >
-                <div className="flex justify-between gap-2">
-                  <div className="min-w-0">
-                    <p className="font-semibold">{prop.player}</p>
-                    <p className="text-xs text-zinc-500">
-                      {prop.market_label || prop.market} · {prop.book || prop.source}
-                    </p>
-                  </div>
-                  <p className="text-lg font-bold text-sky-300 odds-num">{prop.line}</p>
-                </div>
-                <div className="grid grid-cols-2 gap-2">
-                  <button
-                    type="button"
-                    className="rounded-xl border border-emerald-500/30 bg-emerald-500/10 py-2.5"
-                    onClick={() => saveProp(prop, 'over')}
-                  >
-                    <p className="text-[10px] uppercase text-emerald-400 font-semibold">Over / More</p>
-                    <p className="font-bold odds-num text-emerald-300">{oddsLabel(prop.over)}</p>
-                  </button>
-                  <button
-                    type="button"
-                    className="rounded-xl border border-rose-500/30 bg-rose-500/10 py-2.5"
-                    onClick={() => saveProp(prop, 'under')}
-                  >
-                    <p className="text-[10px] uppercase text-rose-400 font-semibold">Under / Less</p>
-                    <p className="font-bold odds-num text-rose-300">{oddsLabel(prop.under)}</p>
-                  </button>
-                </div>
+                {m.text}
               </div>
             ))}
+            {chatBusy && <p className="text-xs text-zinc-500">AI thinking…</p>}
           </div>
+          <div className="flex gap-2">
+            <input
+              value={chatInput}
+              onChange={(e) => setChatInput(e.target.value)}
+              onKeyDown={(e) => e.key === 'Enter' && sendChat()}
+              placeholder="e.g. What’s the best side and why?"
+              className="flex-1 bg-black/40 border border-white/10 rounded-xl px-3 py-2.5 text-sm focus:outline-none focus:border-sky-500/50"
+            />
+            <button type="button" className="btn-primary shrink-0" disabled={chatBusy || !chatInput.trim()} onClick={sendChat}>
+              Send
+            </button>
+          </div>
+        </div>
+
+        {/* Props */}
+        <div className="card space-y-3">
+          <p className="font-semibold">Player bets</p>
+          {propsLoading && <p className="text-sm text-zinc-500">Loading…</p>}
+          {propsNote && <p className="text-[11px] text-zinc-500">{propsNote}</p>}
+          {propsList.slice(0, 30).map((prop: any) => (
+            <div key={prop.id || `${prop.player}-${prop.line}`} className="rounded-xl border border-white/10 p-3 space-y-2">
+              <div className="flex justify-between">
+                <div>
+                  <p className="font-semibold">{prop.player}</p>
+                  <p className="text-xs text-zinc-500">
+                    {prop.market_label || prop.market} · {prop.book}
+                  </p>
+                </div>
+                <p className="text-lg font-bold text-sky-300 odds-num">{prop.line}</p>
+              </div>
+              <div className="grid grid-cols-2 gap-2">
+                <button type="button" className="rounded-xl border border-emerald-500/30 bg-emerald-500/10 py-2" onClick={() => saveProp(prop, 'over')}>
+                  Over {oddsLabel(prop.over)}
+                </button>
+                <button type="button" className="rounded-xl border border-rose-500/30 bg-rose-500/10 py-2" onClick={() => saveProp(prop, 'under')}>
+                  Under {oddsLabel(prop.under)}
+                </button>
+              </div>
+            </div>
+          ))}
         </div>
 
         {toast && (
@@ -246,24 +391,17 @@ export default function GamesPage() {
     )
   }
 
-  // ——— LIST ———
   return (
     <div className="space-y-3.5 pb-8">
       <div className="flex gap-2 overflow-x-auto pb-1">
         {SPORTS.map((s) => (
-          <button
-            key={s}
-            type="button"
-            onClick={() => setSport(s)}
-            className={`chip ${sport === s ? 'chip-on' : 'chip-off'}`}
-          >
+          <button key={s} type="button" onClick={() => setSport(s)} className={`chip ${sport === s ? 'chip-on' : 'chip-off'}`}>
             {s}
           </button>
         ))}
       </div>
-
-      {source ? <p className="text-xs text-emerald-400/90 px-0.5">Live: {source}</p> : null}
-      {note ? <p className="text-xs text-zinc-500 px-0.5">{note}</p> : null}
+      {source ? <p className="text-xs text-emerald-400/90">Live: {source}</p> : null}
+      {note ? <p className="text-xs text-zinc-500">{note}</p> : null}
       {error ? <p className="text-sm text-rose-400">{error}</p> : null}
       {loading ? <p className="text-center text-zinc-500 py-12 text-sm">Loading games…</p> : null}
 
@@ -272,37 +410,25 @@ export default function GamesPage() {
           const books = g.books || {}
           const fd = books.fanduel
           const dk = books.draftkings
-          const when = formatWhen(g.start_time || g.commence_time)
           return (
-            <button
-              key={g.id}
-              type="button"
-              onClick={() => openGame(g)}
-              className="card w-full text-left space-y-2 active:scale-[0.99] transition"
-            >
-              <div>
-                <p className="font-semibold text-[15px] leading-snug">
-                  {g.away_team || 'Away'}
-                  <span className="text-zinc-500 font-normal"> at </span>
-                  {g.home_team || 'Home'}
-                </p>
-                <p className="text-xs text-zinc-300 mt-1.5">
-                  <span className="text-sky-400 font-semibold">{g.sport || sport}</span>
-                  <span className="mx-1.5 text-zinc-600">·</span>
-                  {when}
-                </p>
-              </div>
+            <button key={g.id} type="button" onClick={() => openGame(g)} className="card w-full text-left space-y-2">
+              <p className="font-semibold text-[15px]">
+                {g.away_team} <span className="text-zinc-500 font-normal">at</span> {g.home_team}
+              </p>
+              <p className="text-xs text-zinc-300">
+                <span className="text-sky-400 font-semibold">{g.sport || sport}</span>
+                <span className="mx-1.5 text-zinc-600">·</span>
+                {formatWhen(g.start_time || g.commence_time)}
+              </p>
               <div className="flex flex-wrap gap-2">
                 {fd && (
-                  <span className="text-[11px] rounded-lg bg-sky-500/15 text-sky-300 px-2 py-1 font-medium">
+                  <span className="text-[11px] rounded-lg bg-sky-500/15 text-sky-300 px-2 py-1">
                     FD {oddsLabel(fd.ml_home)}/{oddsLabel(fd.ml_away)}
-                    {fd.total != null ? ` O/U ${fd.total}` : ''}
                   </span>
                 )}
                 {dk && (
-                  <span className="text-[11px] rounded-lg bg-emerald-500/15 text-emerald-300 px-2 py-1 font-medium">
+                  <span className="text-[11px] rounded-lg bg-emerald-500/15 text-emerald-300 px-2 py-1">
                     DK {oddsLabel(dk.ml_home)}/{oddsLabel(dk.ml_away)}
-                    {dk.total != null ? ` O/U ${dk.total}` : ''}
                   </span>
                 )}
               </div>
@@ -310,13 +436,6 @@ export default function GamesPage() {
           )
         })}
       </div>
-
-      {!loading && games.length === 0 && !error && (
-        <div className="card text-center py-10">
-          <p className="font-medium">No games loaded</p>
-          <p className="hint mt-1">Try NFL</p>
-        </div>
-      )}
     </div>
   )
 }

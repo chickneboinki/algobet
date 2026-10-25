@@ -3,18 +3,46 @@ import { api } from '../services/api'
 
 export default function AILabPage() {
   const [prompt, setPrompt] = useState('')
+  const [sports, setSports] = useState<string[]>(['NFL'])
   const [generating, setGenerating] = useState(false)
   const [analyzing, setAnalyzing] = useState(false)
   const [generated, setGenerated] = useState<any>(null)
+  const [saved, setSaved] = useState<any>(null)
   const [insight, setInsight] = useState<any>(null)
   const [error, setError] = useState('')
+  const [saveMsg, setSaveMsg] = useState('')
+
+  const toggleSport = (s: string) => {
+    setSports((prev) => (prev.includes(s) ? prev.filter((x) => x !== s) : [...prev, s]))
+  }
 
   const generate = async () => {
     if (!prompt.trim()) return
     setGenerating(true)
     setError('')
+    setSaved(null)
+    setSaveMsg('')
     try {
-      setGenerated(await api.generate(prompt))
+      const out = await api.generate(prompt, sports)
+      setGenerated(out)
+      // Auto-save to Supabase custom_tools
+      try {
+        const row = await api.saveCustomTool({
+          name: out.name || `AI: ${prompt.slice(0, 32)}`,
+          description: out.description || out.explanation,
+          sports: out.sports?.length ? out.sports : sports,
+          prompt,
+          suggested_code: out.suggested_code,
+          explanation: out.explanation,
+          key_features: out.key_features,
+        })
+        setSaved(row)
+        setSaveMsg('Saved automatically to Tools. You can rename it there.')
+      } catch (e: any) {
+        setSaveMsg(
+          `Generated, but auto-save failed: ${e.message || e}. Create a custom_tools table in Supabase if missing.`
+        )
+      }
     } catch (e: any) {
       setError(e.message || 'Something went wrong')
     } finally {
@@ -41,10 +69,7 @@ export default function AILabPage() {
       const toolLines = Object.entries(byTool)
         .map(([k, v]) => `${k}: ${v.w}-${v.n - v.w}`)
         .join('; ')
-      const summary = `Total bets: ${bets.length}. Settled: ${settled.length} (wins ${wins}, losses ${losses}). Net units: ${units.toFixed(2)}. By tool: ${toolLines || 'none'}. Recent: ${settled
-        .slice(0, 12)
-        .map((b: any) => `${b.recommended_side || b.side}(${b.status})`)
-        .join(', ')}`
+      const summary = `Total bets: ${bets.length}. Settled: ${settled.length} (wins ${wins}, losses ${losses}). Net units: ${units.toFixed(2)}. By tool: ${toolLines || 'none'}.`
       setInsight(await api.analyze(summary))
     } catch (e: any) {
       setError(e.message || 'Something went wrong')
@@ -54,80 +79,55 @@ export default function AILabPage() {
   }
 
   return (
-    <div className="space-y-4">
+    <div className="space-y-4 pb-8">
       <div className="card space-y-3">
         <p className="label">AI Lab</p>
         <h2 className="text-lg font-semibold">Build a new tool</h2>
-        <p className="hint">
-          Describe a strategy in plain English. The AI drafts a tool in the same evidence-first style as your engines.
-        </p>
+        <p className="hint">Describe a strategy. It saves automatically so you can rename it and test it on games.</p>
+        <div className="flex flex-wrap gap-2">
+          {['NFL', 'NCAAF', 'NCAAB', 'NBA', 'MLB', 'NHL'].map((s) => (
+            <button key={s} type="button" className={`chip ${sports.includes(s) ? 'chip-on' : 'chip-off'}`} onClick={() => toggleSport(s)}>
+              {s}
+            </button>
+          ))}
+        </div>
         <textarea
           value={prompt}
           onChange={(e) => setPrompt(e.target.value)}
-          placeholder="Example: NFL home underdogs when DraftKings is softer than FanDuel on the spread"
+          placeholder="Example: NFL home underdogs when FanDuel is softer than DraftKings"
           className="w-full bg-black/40 border border-white/10 rounded-xl p-3 text-sm min-h-[120px] focus:outline-none focus:border-sky-500/50"
         />
         <button type="button" onClick={generate} disabled={generating || !prompt.trim()} className="btn-primary disabled:opacity-50">
-          {generating ? 'Working…' : 'Generate tool idea'}
+          {generating ? 'Working…' : 'Generate & save tool'}
         </button>
         {error && <p className="text-red-400 text-sm">{error}</p>}
+        {saveMsg && <p className="text-sm text-emerald-400/90">{saveMsg}</p>}
       </div>
 
       {generated && (
         <div className="card space-y-2 border-sky-500/30">
-          <div className="flex justify-between items-start gap-2">
-            <h3 className="font-semibold">{generated.name}</h3>
-            {generated.confidence != null && (
-              <span className="text-sky-400 text-sm odds-num">{Math.round(generated.confidence * 100)}%</span>
-            )}
-          </div>
+          <h3 className="font-semibold">{generated.name}</h3>
           <p className="text-sm text-zinc-300">{generated.explanation || generated.description}</p>
-          {generated.key_features?.length > 0 && (
-            <ul className="text-sm text-zinc-400 space-y-1">
-              {generated.key_features.map((f: string, i: number) => (
-                <li key={i}>· {f}</li>
-              ))}
-            </ul>
+          {(generated.sports || sports)?.length > 0 && (
+            <p className="text-xs text-sky-400">Leagues: {(generated.sports || sports).join(', ')}</p>
           )}
-          {generated.suggested_code && (
-            <pre className="text-xs bg-black/50 p-3 rounded-xl overflow-x-auto whitespace-pre-wrap font-mono text-zinc-400">
-              {generated.suggested_code}
-            </pre>
-          )}
+          {saved?.id && <p className="text-xs text-zinc-500">Saved id: {saved.id}</p>}
         </div>
       )}
 
       <div className="card space-y-3">
         <h2 className="text-lg font-semibold">Learn from your results</h2>
-        <p className="hint">
-          Reads your tracked bets and suggests which tools to trust more, and what to try next.
-        </p>
         <button type="button" onClick={analyze} disabled={analyzing} className="btn-ghost w-full disabled:opacity-50">
           {analyzing ? 'Reviewing…' : 'Review my history'}
         </button>
         {insight && (
-          <div className="space-y-3 pt-1">
-            <p className="text-sm whitespace-pre-wrap text-zinc-300">{insight.summary}</p>
-            {insight.suggestions?.length > 0 && (
-              <div>
-                <p className="label mb-1">Suggestions</p>
-                <ul className="text-sm space-y-1 text-zinc-300">
-                  {insight.suggestions.map((s: string, i: number) => (
-                    <li key={i}>· {s}</li>
-                  ))}
-                </ul>
-              </div>
-            )}
-            {insight.new_algorithm_ideas?.length > 0 && (
-              <div>
-                <p className="label mb-1">Ideas for new tools</p>
-                <ul className="text-sm space-y-1 text-zinc-300">
-                  {insight.new_algorithm_ideas.map((s: string, i: number) => (
-                    <li key={i}>· {s}</li>
-                  ))}
-                </ul>
-              </div>
-            )}
+          <div className="space-y-2">
+            <p className="text-sm text-zinc-300 whitespace-pre-wrap">{insight.summary}</p>
+            {(insight.suggestions || []).map((s: string, i: number) => (
+              <p key={i} className="text-sm text-zinc-400">
+                · {s}
+              </p>
+            ))}
           </div>
         )}
       </div>
