@@ -1,76 +1,97 @@
 /**
- * Live player props:
- * 1) PrizePicks partner-api (real PP board)
- * 2) Underdog Fantasy
- * 3) Sample fallback
+ * Live player props for ONE game.
+ * Sources: PrizePicks (More/Less) + Underdog (Higher/Lower, with prices).
+ * The game is matched by team name, so every prop returned belongs to that game.
  */
 
-async function fetchPrizePicks({ limit = 120, q = '', sport = '' } = {}) {
-  const res = await fetch('https://partner-api.prizepicks.com/projections?per_page=200', {
-    headers: {
-      'User-Agent':
-        'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-      Accept: 'application/json',
-    },
-  });
-  if (!res.ok) throw new Error(`PP ${res.status}`);
-  const body = await res.json();
+// PrizePicks league ids (used to narrow the board; falls back to the full board if empty)
+const PP_LEAGUE_ID = { NFL: 9, NBA: 7, NHL: 8, MLB: 2, NCAAF: 15, NCAAB: 20 };
+
+const PARTIAL_RE = /\b(1st|2nd|3rd|4th|1h|2h|1q|2q|3q|4q|1st half|2nd half|first half|second half)\b/i;
+const UD_PARTIAL_RE = /^(1q|2q|3q|4q|1h|2h)\b/i;
+
+const norm = (s) => String(s || '').toLowerCase().replace(/[^a-z0-9 ]/g, ' ').replace(/\s+/g, ' ').trim();
+
+/** Words that identify a team: full name, nickname, and (for college) the school name. */
+function teamKeys(name, sport) {
+  const full = norm(name);
+  if (!full) return [];
+  const words = full.split(' ');
+  const keys = new Set([full]);
+  if (words.length > 1) keys.add(words[words.length - 1]); // nickname: "saints"
+  if ((sport === 'NCAAF' || sport === 'NCAAB') && words.length > 1) keys.add(words.slice(0, -1).join(' ')); // "alabama"
+  return [...keys].filter((k) => k.length >= 3);
+}
+
+function textHasTeam(text, keys) {
+  const t = ` ${norm(text)} `;
+  return keys.some((k) => t.includes(` ${k} `));
+}
+
+async function fetchJson(url, headers) {
+  const res = await fetch(url, { headers });
+  if (!res.ok) throw new Error(`${res.status}`);
+  return res.json();
+}
+
+async function fetchPrizePicks(sport) {
+  const headers = {
+    'User-Agent':
+      'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+    Accept: 'application/json',
+  };
+  const base = 'https://partner-api.prizepicks.com/projections?single_stat=true&per_page=1000';
+  let body;
+  const lid = PP_LEAGUE_ID[sport];
+  if (lid) {
+    try {
+      body = await fetchJson(`${base}&league_id=${lid}`, headers);
+      if (!(body.data || []).length) body = null;
+    } catch {
+      body = null;
+    }
+  }
+  if (!body) body = await fetchJson(base, headers);
+
   const players = {};
   for (const row of body.included || []) {
     if (row.type === 'new_player') players[row.id] = row.attributes || {};
   }
-  const query = (q || '').toLowerCase().trim();
-  const sportU = (sport || '').toUpperCase();
   const out = [];
   for (const d of body.data || []) {
     const a = d.attributes || {};
+    if (a.odds_type && a.odds_type !== 'standard') continue; // skip demon/goblin alternate lines
     const p = players[d.relationships?.new_player?.data?.id] || {};
-    const name = p.name || p.display_name || 'Player';
     const market = a.stat_type || a.stat_display_name || 'Prop';
-    const league = a.league_ppid || p.league || '';
-    if (sportU && league && !String(league).toUpperCase().includes(sportU.replace('NCAAF', 'CFB').replace('NCAAB', 'CBB'))) {
-      // keep loose — still include NFL/NBA matches
-      if (sportU === 'NFL' && !/NFL|CFB/i.test(league)) continue;
-      if (sportU === 'NBA' && !/NBA/i.test(league)) continue;
-    }
-    if (query) {
-      const blob = `${name} ${market} ${league} ${a.description || ''}`.toLowerCase();
-      if (!blob.includes(query)) continue;
-    }
     out.push({
       id: `pp-${d.id}`,
-      player: name,
+      player: p.display_name || p.name || 'Player',
       market,
       market_label: market,
       line: a.line_score != null ? Number(a.line_score) : null,
       over: null,
       under: null,
+      labels: ['More', 'Less'],
       book: 'PrizePicks',
       source: 'prizepicks',
-      live: Boolean(a.is_live),
+      live: Boolean(a.is_live) || a.status === 'in_progress',
       team: p.team_name || p.team || null,
-      sport: league || sportU,
+      league: String(p.league || a.league || '').toUpperCase(),
       game_title: a.description || null,
+      partial: PARTIAL_RE.test(a.description || '') || PARTIAL_RE.test(market),
     });
-    if (out.length >= limit) break;
   }
   return out;
 }
 
-async function fetchUnderdog({ limit = 80, q = '' } = {}) {
-  const res = await fetch('https://api.underdogfantasy.com/v1/over_under_lines', {
-    headers: {
-      'User-Agent':
-        'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15',
-      Accept: 'application/json',
-    },
+async function fetchUnderdog() {
+  const data = await fetchJson('https://api.underdogfantasy.com/v1/over_under_lines', {
+    'User-Agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15',
+    Accept: 'application/json',
   });
-  if (!res.ok) throw new Error(`UD ${res.status}`);
-  const data = await res.json();
   const players = Object.fromEntries((data.players || []).map((p) => [p.id, p]));
   const apps = Object.fromEntries((data.appearances || []).map((a) => [a.id, a]));
   const games = Object.fromEntries((data.games || []).map((g) => [g.id, g]));
-  const query = (q || '').toLowerCase().trim();
   const out = [];
   for (const line of data.over_under_lines || []) {
     if (line.status && line.status !== 'active') continue;
@@ -80,9 +101,7 @@ async function fetchUnderdog({ limit = 80, q = '' } = {}) {
     const player = players[app.player_id] || {};
     const game = games[app.match_id] || {};
     let playerName =
-      player.first_name && player.last_name
-        ? `${player.first_name} ${player.last_name}`
-        : player.name || null;
+      player.first_name && player.last_name ? `${player.first_name} ${player.last_name}` : player.name || null;
     let over = null;
     let under = null;
     for (const opt of line.options || []) {
@@ -94,11 +113,6 @@ async function fetchUnderdog({ limit = 80, q = '' } = {}) {
       if (choice === 'lower' || choice === 'under') under = Number.isFinite(price) ? price : null;
     }
     const market = st.display_stat || st.stat || 'Prop';
-    const gameTitle = game.full_team_names_title || game.abbreviated_title || '';
-    if (query) {
-      const blob = `${playerName || ''} ${market} ${gameTitle}`.toLowerCase();
-      if (!blob.includes(query)) continue;
-    }
     out.push({
       id: `ud-${line.id}`,
       player: playerName || 'Player',
@@ -107,12 +121,15 @@ async function fetchUnderdog({ limit = 80, q = '' } = {}) {
       line: line.stat_value != null ? Number(line.stat_value) : null,
       over,
       under,
+      labels: ['Over', 'Under'],
       book: 'Underdog',
       source: 'underdog',
-      live: Boolean(line.live_event),
-      game_title: gameTitle || null,
+      live: Boolean(line.live_event) || Boolean(game.live),
+      team: null,
+      league: String(game.sport_id || '').toUpperCase(),
+      game_title: game.full_team_names_title || game.abbreviated_title || '',
+      partial: UD_PARTIAL_RE.test(market),
     });
-    if (out.length >= limit) break;
   }
   return out;
 }
@@ -120,56 +137,64 @@ async function fetchUnderdog({ limit = 80, q = '' } = {}) {
 export default async function handler(req, res) {
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'GET,OPTIONS');
+  res.setHeader('Cache-Control', 'public, s-maxage=15, stale-while-revalidate=30');
   if (req.method === 'OPTIONS') return res.status(200).end();
 
-  const sport = (req.query.sport || '').toUpperCase();
-  const home = req.query.home || '';
-  const away = req.query.away || '';
-  const q = req.query.q || [home, away].filter(Boolean).join(' ');
-  const book = (req.query.book || 'all').toLowerCase();
+  const sport = String(req.query.sport || '').toUpperCase();
+  const home = String(req.query.home || '');
+  const away = String(req.query.away || '');
+  const scope = String(req.query.scope || 'game'); // "game" = full-game only, "all" = include halves/quarters
+  const combos = req.query.combos === '1';
 
-  const sources = [];
-  let props = [];
+  const homeKeys = teamKeys(home, sport);
+  const awayKeys = teamKeys(away, sport);
+  const haveTeams = homeKeys.length > 0 && awayKeys.length > 0;
 
-  if (book === 'all' || book === 'prizepicks' || book === 'pp') {
-    try {
-      const pp = await fetchPrizePicks({ limit: 100, q, sport });
-      if (pp.length) {
-        props = props.concat(pp);
-        sources.push({ prizepicks: pp.length });
-      }
-    } catch (e) {
-      sources.push({ prizepicks: e.message });
+  const sources = {};
+  const [pp, ud] = await Promise.all([
+    fetchPrizePicks(sport).catch((e) => ((sources.prizepicks = `error ${e.message}`), [])),
+    fetchUnderdog().catch((e) => ((sources.underdog = `error ${e.message}`), [])),
+  ]);
+
+  const keep = (p, isPP) => {
+    if (!combos && / \+ /.test(p.player)) return false; // combo props (two players)
+    if (scope !== 'all' && p.partial) return false;
+    if (p.line == null) return false;
+    if (!haveTeams) return true;
+    if (isPP) {
+      // PrizePicks gives the player's team; it must be one of the two teams playing
+      return textHasTeam(p.team, homeKeys) || textHasTeam(p.team, awayKeys);
     }
-  }
+    // Underdog gives "Away Team @ Home Team"; both teams must appear
+    return textHasTeam(p.game_title, homeKeys) && textHasTeam(p.game_title, awayKeys);
+  };
 
-  if (book === 'all' || book === 'underdog') {
-    try {
-      const ud = await fetchUnderdog({ limit: 60, q });
-      if (ud.length) {
-        props = props.concat(ud);
-        sources.push({ underdog: ud.length });
-      }
-    } catch (e) {
-      sources.push({ underdog: e.message });
-    }
-  }
+  const ppKept = pp.filter((p) => keep(p, true));
+  const udKept = ud.filter((p) => keep(p, false));
+  sources.prizepicks = sources.prizepicks || ppKept.length;
+  sources.underdog = sources.underdog || udKept.length;
 
-  if (!props.length) {
-    return res.status(200).json({
-      source: 'empty',
-      count: 0,
-      props: [],
-      sources_tried: sources,
-      note: 'No live props right now (rate limit or filter). Retry in a minute.',
-    });
-  }
+  const seen = new Set();
+  const props = [...udKept, ...ppKept]
+    .filter((p) => {
+      const k = `${p.book}|${p.player}|${p.market}|${p.line}`;
+      if (seen.has(k)) return false;
+      seen.add(k);
+      return true;
+    })
+    .sort((a, b) => Number(b.live) - Number(a.live) || a.player.localeCompare(b.player))
+    .slice(0, 400);
+
+  const live_count = props.filter((p) => p.live).length;
 
   return res.status(200).json({
-    source: sources.map((s) => Object.keys(s)[0]).join('+'),
+    source: props.length ? 'live' : 'empty',
     count: props.length,
+    live_count,
     props,
     sources_tried: sources,
-    note: 'Live player props: PrizePicks (More/Less) and/or Underdog (Higher/Lower).',
+    note: props.length
+      ? 'Live player props from PrizePicks and Underdog.'
+      : 'No player props are posted for this game yet. They usually appear a day or two before kickoff.',
   });
 }

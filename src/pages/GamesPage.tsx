@@ -38,6 +38,8 @@ export default function GamesPage() {
   const [propsList, setPropsList] = useState<any[]>([])
   const [propsLoading, setPropsLoading] = useState(false)
   const [propsNote, setPropsNote] = useState('')
+  const [propsLive, setPropsLive] = useState(0)
+  const [propSearch, setPropSearch] = useState('')
   const [toast, setToast] = useState('')
 
   // tools + AI on game
@@ -70,29 +72,41 @@ export default function GamesPage() {
     load()
   }, [sport])
 
+  const loadProps = async (g: any, silent = false) => {
+    if (!silent) setPropsLoading(true)
+    try {
+      const p = await api.playerProps({ sport: g.sport || sport, home: g.home_team, away: g.away_team })
+      setPropsList(Array.isArray(p?.props) ? p.props : [])
+      setPropsNote(p?.note || '')
+      setPropsLive(Number(p?.live_count || 0))
+    } catch (e: any) {
+      if (!silent) {
+        setPropsNote(String(e?.message || 'Could not load player bets'))
+        setPropsList([])
+      }
+    } finally {
+      if (!silent) setPropsLoading(false)
+    }
+  }
+
   const openGame = async (g: any) => {
     setSelected(g)
     setPropsList([])
     setPropsNote('')
+    setPropsLive(0)
+    setPropSearch('')
     setToolResults([])
     setChatLog([])
     setChatInput('')
-    setPropsLoading(true)
-    try {
-      const p = await api.playerProps({
-        sport: g.sport || sport,
-        home: g.home_team,
-        away: g.away_team,
-      })
-      setPropsList(Array.isArray(p?.props) ? p.props : [])
-      setPropsNote(p?.note || p?.source || '')
-    } catch (e: any) {
-      setPropsNote(String(e?.message || 'Props failed'))
-      setPropsList([])
-    } finally {
-      setPropsLoading(false)
-    }
+    loadProps(g)
   }
+
+  // Keep player bets fresh while a game is open (live lines move)
+  useEffect(() => {
+    if (!selected) return
+    const t = setInterval(() => loadProps(selected, true), 30000)
+    return () => clearInterval(t)
+  }, [selected])
 
   const runOne = async (algoId: string) => {
     if (!selected) return
@@ -191,7 +205,7 @@ export default function GamesPage() {
         home_team: selected.home_team,
         away_team: selected.away_team,
         algorithm_id: 'player-prop',
-        algorithm_name: `${prop.player} ${prop.market_label || prop.market}`,
+        algorithm_name: `${prop.player} ${prop.market_label || prop.market} (${prop.book})`,
         recommended_side: side,
         side: `${side} ${prop.line}`,
         confidence: 0.5,
@@ -214,6 +228,15 @@ export default function GamesPage() {
     const when = formatWhen(selected.start_time || selected.commence_time)
     const picks = toolResults.filter((t) => t.recommended_side && t.recommended_side !== 'none')
     const hasRun = toolResults.length > 0
+    const needle = propSearch.trim().toLowerCase()
+    const byPlayer: Record<string, any[]> = {}
+    for (const pr of propsList) {
+      if (needle && !`${pr.player} ${pr.market_label || pr.market}`.toLowerCase().includes(needle)) continue
+      ;(byPlayer[pr.player] ||= []).push(pr)
+    }
+    const groupedProps = Object.entries(byPlayer)
+      .sort((x, y) => Number(y[1].some((r: any) => r.live)) - Number(x[1].some((r: any) => r.live)) || x[0].localeCompare(y[0]))
+      .slice(0, 40)
 
     return (
       <div className="space-y-4 pb-8">
@@ -365,32 +388,66 @@ export default function GamesPage() {
           )}
         </div>
 
-        {/* Props */}
+        {/* Player bets */}
         <div className="card space-y-3">
-          <p className="font-semibold text-[15px]">Player bets</p>
-          {propsLoading && <p className="text-sm text-zinc-500">Loading…</p>}
-          {!propsLoading && propsList.length === 0 && <p className="hint">No player bets available for this game.</p>}
-          {propsList.slice(0, 30).map((prop: any) => (
-            <div key={prop.id || `${prop.player}-${prop.line}`} className="rounded-xl border border-white/[0.08] p-3 space-y-2.5">
-              <div className="flex justify-between gap-3">
-                <div className="min-w-0">
-                  <p className="font-semibold text-[15px] truncate">{prop.player}</p>
-                  <p className="text-xs text-zinc-500">
-                    {prop.market_label || prop.market} · {prop.book}
-                  </p>
-                </div>
-                <p className="text-lg font-bold text-sky-300 odds-num shrink-0">{prop.line}</p>
+          <div className="flex items-center justify-between gap-2">
+            <p className="font-semibold text-[15px]">Player bets</p>
+            {propsLive > 0 ? (
+              <span className="pill pill-good">● {propsLive} live</span>
+            ) : (
+              propsList.length > 0 && <span className="pill">{propsList.length} lines</span>
+            )}
+          </div>
+
+          {propsList.length > 0 && (
+            <input
+              value={propSearch}
+              onChange={(e) => setPropSearch(e.target.value)}
+              placeholder="Search a player or stat"
+              className="w-full"
+            />
+          )}
+
+          {propsLoading && <p className="text-sm text-zinc-500">Loading player bets…</p>}
+          {!propsLoading && propsList.length === 0 && <p className="hint">{propsNote || 'No player bets for this game yet.'}</p>}
+
+          {groupedProps.map(([player, rows]) => (
+            <div key={player} className="rounded-2xl border border-white/[0.08] overflow-hidden">
+              <div className="px-3.5 py-2.5 bg-white/[0.03] flex items-center justify-between gap-2">
+                <p className="font-semibold text-[15px] truncate">{player}</p>
+                {rows.some((r: any) => r.live) && <span className="pill pill-good shrink-0">LIVE</span>}
               </div>
-              <div className="grid grid-cols-2 gap-2">
-                <button type="button" className="rounded-xl border border-emerald-500/30 bg-emerald-500/10 py-3 text-sm font-medium" onClick={() => saveProp(prop, 'over')}>
-                  Over {oddsLabel(prop.over)}
-                </button>
-                <button type="button" className="rounded-xl border border-rose-500/30 bg-rose-500/10 py-3 text-sm font-medium" onClick={() => saveProp(prop, 'under')}>
-                  Under {oddsLabel(prop.under)}
-                </button>
+              <div className="divide-y divide-white/[0.05]">
+                {rows.map((prop: any) => (
+                  <div key={prop.id} className="px-3.5 py-3 space-y-2">
+                    <div className="flex items-baseline justify-between gap-3">
+                      <p className="text-sm text-zinc-300">{prop.market_label || prop.market}</p>
+                      <p className="text-lg font-bold text-sky-300 odds-num">{prop.line}</p>
+                    </div>
+                    <div className="grid grid-cols-2 gap-2">
+                      <button
+                        type="button"
+                        className="rounded-xl border border-emerald-500/30 bg-emerald-500/10 py-2.5 text-sm font-medium active:bg-emerald-500/20"
+                        onClick={() => saveProp(prop, 'over')}
+                      >
+                        {(prop.labels || ['Over', 'Under'])[0]} {prop.over != null ? oddsLabel(prop.over) : ''}
+                      </button>
+                      <button
+                        type="button"
+                        className="rounded-xl border border-rose-500/30 bg-rose-500/10 py-2.5 text-sm font-medium active:bg-rose-500/20"
+                        onClick={() => saveProp(prop, 'under')}
+                      >
+                        {(prop.labels || ['Over', 'Under'])[1]} {prop.under != null ? oddsLabel(prop.under) : ''}
+                      </button>
+                    </div>
+                    <p className="text-[11px] text-zinc-500">{prop.book}</p>
+                  </div>
+                ))}
               </div>
             </div>
           ))}
+          {propsList.length > 0 && groupedProps.length === 0 && <p className="hint">No match for “{propSearch}”.</p>}
+          {propsList.length > 0 && <p className="text-[11px] text-zinc-600">Updates every 30 seconds while this page is open.</p>}
         </div>
 
         {toast && <div className="toast">{toast}</div>}

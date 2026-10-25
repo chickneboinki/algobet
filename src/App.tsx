@@ -4,7 +4,6 @@ import GamesPage from './pages/GamesPage'
 import AlgorithmsPage from './pages/AlgorithmsPage'
 import AILabPage from './pages/AILabPage'
 import HistoryPage from './pages/HistoryPage'
-import BankrollPage from './pages/BankrollPage'
 import WatchPage from './pages/WatchPage'
 import SettingsPage from './pages/SettingsPage'
 
@@ -47,11 +46,6 @@ const icons: Record<string, JSX.Element> = {
       <path d="M8 6h12M8 12h12M8 18h12M4 6h.01M4 12h.01M4 18h.01" />
     </svg>
   ),
-  Bank: (
-    <svg {...stroke}>
-      <path d="M3 10l9-6 9 6M5 10v8M9.5 10v8M14.5 10v8M19 10v8M3 20h18" />
-    </svg>
-  ),
 }
 
 const tabs = [
@@ -60,7 +54,6 @@ const tabs = [
   { to: '/tools', label: 'Tools' },
   { to: '/ai', label: 'AI' },
   { to: '/bets', label: 'Bets' },
-  { to: '/bankroll', label: 'Bank' },
 ]
 
 export default function App() {
@@ -88,15 +81,13 @@ export default function App() {
           <Route path="/watch" element={<WatchPage />} />
           <Route path="/bets" element={<HistoryPage />} />
           <Route path="/history" element={<HistoryPage />} />
-          <Route path="/bankroll" element={<BankrollPage />} />
-          <Route path="/bank" element={<BankrollPage />} />
           <Route path="/setup" element={<SettingsPage />} />
           <Route path="/settings" element={<SettingsPage />} />
         </Routes>
       </main>
 
       <nav className="nav-bar">
-        <div className="max-w-[480px] mx-auto grid grid-cols-6 pt-2.5 pb-2">
+        <div className="max-w-[480px] mx-auto grid grid-cols-5 pt-2.5 pb-2">
           {tabs.map((t) => (
             <NavLink
               key={t.to}
