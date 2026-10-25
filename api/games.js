@@ -1,6 +1,6 @@
 /**
  * Live games: FanDuel sbapi + ESPN DraftKings.
- * Always returns normalized: start_time, books.{fanduel,draftkings}, bets[]
+ * sport=ALL pulls every major league.
  */
 
 const SPORT_PATHS = {
@@ -11,6 +11,8 @@ const SPORT_PATHS = {
   NCAAF: 'football/college-football',
   NCAAB: 'basketball/mens-college-basketball',
 };
+
+const ALL_SPORTS = Object.keys(SPORT_PATHS);
 
 const FD_PAGE = { NFL: 'nfl', NBA: 'nba', MLB: 'mlb', NHL: 'nhl', NCAAF: 'ncaaf', NCAAB: 'ncaab' };
 const FD_AK = process.env.FD_AK || 'FhMFpcPWXMeyZxOx';
@@ -48,17 +50,10 @@ function booksFromBookmakers(bookmakers, home, away) {
         if (row.ml_home == null && outcomes[0]) row.ml_home = outcomes[0].price;
         if (row.ml_away == null && outcomes[1]) row.ml_away = outcomes[1].price;
         for (const o of outcomes) {
-          bets.push({
-            book: bm.title || key,
-            market: 'Moneyline',
-            selection: o.name,
-            line: null,
-            odds: o.price,
-          });
+          bets.push({ book: bm.title || key, market: 'Moneyline', selection: o.name, line: null, odds: o.price });
         }
       }
       if (m.key === 'spreads') {
-        // `spread` must be the HOME team's spread. Match by team name instead of taking the first outcome.
         const homeO = outcomes.find((o) => o.point != null && teamMatch(o.name, home));
         const awayO = outcomes.find((o) => o.point != null && teamMatch(o.name, away));
         if (row.spread == null) {
@@ -67,25 +62,13 @@ function booksFromBookmakers(bookmakers, home, away) {
           else if (outcomes[0]?.point != null) row.spread = outcomes[0].point;
         }
         for (const o of outcomes) {
-          bets.push({
-            book: bm.title || key,
-            market: 'Spread',
-            selection: o.name,
-            line: o.point ?? null,
-            odds: o.price,
-          });
+          bets.push({ book: bm.title || key, market: 'Spread', selection: o.name, line: o.point ?? null, odds: o.price });
         }
       }
       if (m.key === 'totals') {
         for (const o of outcomes) {
           if (row.total == null && o.point != null) row.total = o.point;
-          bets.push({
-            book: bm.title || key,
-            market: 'Total',
-            selection: o.name,
-            line: o.point ?? null,
-            odds: o.price,
-          });
+          bets.push({ book: bm.title || key, market: 'Total', selection: o.name, line: o.point ?? null, odds: o.price });
         }
       }
     }
@@ -99,6 +82,7 @@ function normalizeGame(g) {
   const away = g.away_team || '';
   const { books, bets } = booksFromBookmakers(g.bookmakers, home, away);
   const start = g.commence_time || g.start_time || null;
+  const q = encodeURIComponent(`${away} ${home}`);
   return {
     ...g,
     start_time: start,
@@ -106,6 +90,11 @@ function normalizeGame(g) {
     books,
     bets,
     odds: books.fanduel || books.draftkings || Object.values(books)[0] || null,
+    links: {
+      fanduel: `https://sportsbook.fanduel.com/navigation/nfl?search=${q}`,
+      draftkings: `https://sportsbook.draftkings.com/sportsbook?search=${q}`,
+      prizepicks: 'https://app.prizepicks.com/',
+    },
   };
 }
 
@@ -125,7 +114,6 @@ async function fetchFanDuel(sport) {
         'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
       Accept: 'application/json',
       'X-Application': 'Whistler',
-      'X-Request-Id': String(Date.now()) + Math.random(),
       Referer: 'https://sportsbook.fanduel.com/',
       Origin: 'https://sportsbook.fanduel.com',
     },
@@ -143,7 +131,7 @@ async function fetchFanDuel(sport) {
   const games = [];
   for (const [eid, ev] of Object.entries(events)) {
     const name = ev.name || '';
-    if (!name || name === sport || name === 'NFL' || name === 'NBA') continue;
+    if (!name || name === sport) continue;
     if (!name.includes('@') && !/\sv\s|\svs/i.test(name)) continue;
     const parts = name.split(/\s+@\s+|\s+v\s+|\s+vs\.?\s+/i);
     const awayTeam = parts[0]?.trim() || '';
@@ -164,7 +152,7 @@ async function fetchFanDuel(sport) {
       else if (/total|over\/under/i.test(mname)) fdMarkets.push({ key: 'totals', outcomes });
     }
     games.push({
-      id: `fd-${eid}`,
+      id: `fd-${sport}-${eid}`,
       sport,
       commence_time: ev.openDate,
       home_team: homeTeam,
@@ -223,7 +211,7 @@ async function fetchEspnDk(sport) {
       });
     }
     return {
-      id: String(ev.id),
+      id: `${sport}-${ev.id}`,
       sport,
       commence_time: ev.date,
       home_team: home?.team?.displayName,
@@ -231,7 +219,6 @@ async function fetchEspnDk(sport) {
       status: comp.status?.type?.description,
       live: (comp.status?.type?.state || '') === 'in',
       bookmakers: [{ key: 'draftkings', title: 'DraftKings', markets }],
-      details: primary.details,
       source: 'espn-draftkings',
     };
   });
@@ -241,11 +228,9 @@ function mergeByTeams(fdGames, dkGames) {
   const out = [];
   const used = new Set();
   for (const g of dkGames) {
-    const fd = fdGames.find((f) => {
-      return (
-        teamMatch(f.home_team, g.home_team) && teamMatch(f.away_team, g.away_team)
-      );
-    });
+    const fd = fdGames.find(
+      (f) => teamMatch(f.home_team, g.home_team) && teamMatch(f.away_team, g.away_team)
+    );
     const bookmakers = [...(g.bookmakers || [])];
     if (fd) {
       used.add(fd.id);
@@ -259,20 +244,19 @@ function mergeByTeams(fdGames, dkGames) {
   return out;
 }
 
-/** Live games for one league (FanDuel + DraftKings merged). Also used by best-bets. */
 export async function getGames(sport) {
   const notes = [];
   let fd = [];
   let dk = [];
   try {
     fd = await fetchFanDuel(sport);
-    notes.push(`FanDuel ${fd.length}`);
+    notes.push(`FD ${fd.length}`);
   } catch (e) {
-    notes.push(`FanDuel: ${e.message}`);
+    notes.push(`FD: ${e.message}`);
   }
   try {
     dk = await fetchEspnDk(sport);
-    notes.push(`DraftKings ${dk.length}`);
+    notes.push(`DK ${dk.length}`);
   } catch (e) {
     notes.push(`ESPN: ${e.message}`);
   }
@@ -282,13 +266,29 @@ export async function getGames(sport) {
   return { games, note: notes.join(' | ') };
 }
 
+export async function getAllGames() {
+  const all = [];
+  const notes = [];
+  for (const sport of ALL_SPORTS) {
+    try {
+      const { games, note } = await getGames(sport);
+      all.push(...games);
+      notes.push(`${sport}:{${note}}`);
+    } catch (e) {
+      notes.push(`${sport}: ${e.message}`);
+    }
+  }
+  return { games: all, note: notes.join(' · ') };
+}
+
 export default async function handler(req, res) {
   res.setHeader('Access-Control-Allow-Origin', '*');
-  res.setHeader('Cache-Control', 's-maxage=60, stale-while-revalidate=120');
+  res.setHeader('Cache-Control', 's-maxage=45, stale-while-revalidate=90');
   if (req.method === 'OPTIONS') return res.status(200).end();
 
   const sport = (req.query.sport || 'NFL').toUpperCase();
-  const { games, note } = await getGames(sport);
+  const { games, note } =
+    sport === 'ALL' || sport === 'ALL_SPORTS' ? await getAllGames() : await getGames(sport);
 
   return res.status(200).json({
     source: 'fanduel+draftkings',
