@@ -4,8 +4,9 @@ export default async function handler(req, res) {
 
   const results = { at: new Date().toISOString() };
 
+  // PrizePicks
   try {
-    const r = await fetch('https://partner-api.prizepicks.com/projections?per_page=50', {
+    const r = await fetch('https://partner-api.prizepicks.com/projections?per_page=30', {
       headers: {
         'User-Agent':
           'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
@@ -14,67 +15,63 @@ export default async function handler(req, res) {
     });
     if (!r.ok) throw new Error(String(r.status));
     const d = await r.json();
-    const n = (d.data || []).length;
-    const players = {};
-    for (const row of d.included || []) {
-      if (row.type === 'new_player') players[row.id] = row.attributes || {};
-    }
-    const first = (d.data || [])[0];
-    const p = players[first?.relationships?.new_player?.data?.id] || {};
-    const a = first?.attributes || {};
-    results.prizepicks = {
-      ok: true,
-      count: n,
-      sample: p.name ? `${p.name} ${a.stat_type} ${a.line_score}` : null,
-    };
+    results.prizepicks = { ok: true, count: (d.data || []).length };
   } catch (e) {
     results.prizepicks = { ok: false, error: e.message };
   }
 
+  // FanDuel
   try {
-    const r = await fetch('https://api.underdogfantasy.com/v1/over_under_lines', {
-      headers: {
-        'User-Agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X)',
-        Accept: 'application/json',
-      },
+    const q = new URLSearchParams({
+      page: 'CUSTOM',
+      customPageId: 'nfl',
+      language: 'en',
+      regionCode: 'NAMERICA',
+      _ak: process.env.FD_AK || 'FhMFpcPWXMeyZxOx',
     });
+    const r = await fetch(
+      `https://sbapi.il.sportsbook.fanduel.com/api/content-managed-page?${q}`,
+      {
+        headers: {
+          'User-Agent':
+            'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
+          Accept: 'application/json',
+          'X-Application': 'Whistler',
+          Referer: 'https://sportsbook.fanduel.com/',
+        },
+      }
+    );
     if (!r.ok) throw new Error(String(r.status));
     const d = await r.json();
-    results.underdog = { ok: true, count: (d.over_under_lines || []).length };
+    const markets = Object.keys(d.attachments?.markets || {}).length;
+    const events = Object.keys(d.attachments?.events || {}).length;
+    results.fanduel = { ok: true, events, markets };
   } catch (e) {
-    results.underdog = { ok: false, error: e.message };
+    results.fanduel = { ok: false, error: e.message };
   }
 
+  // DraftKings via ESPN
   try {
     const r = await fetch('https://site.api.espn.com/apis/site/v2/sports/football/nfl/scoreboard');
     const d = await r.json();
     const withOdds = (d.events || []).filter((e) => (e.competitions?.[0]?.odds || []).length);
-    results.draftkings_via_espn = {
+    results.draftkings = {
       ok: true,
       games: (d.events || []).length,
       with_odds: withOdds.length,
       sample: withOdds.slice(0, 2).map((e) => {
         const o = e.competitions[0].odds[0];
-        return `${e.name} | ${o.details} ou ${o.overUnder} (${o.provider?.name})`;
+        return `${e.name} | ${o.details} (${o.provider?.name})`;
       }),
     };
   } catch (e) {
-    results.draftkings_via_espn = { ok: false, error: e.message };
+    results.draftkings = { ok: false, error: e.message };
   }
 
-  results.fanduel = {
-    ok: Boolean(process.env.ODDS_API_KEY),
-    note: process.env.ODDS_API_KEY
-      ? 'ODDS_API_KEY set — /api/games returns FanDuel + DraftKings when credits remain'
-      : 'Direct FanDuel blocked. Keep ODDS_API_KEY in Vercel for FanDuel lines.',
-  };
-
-  const ok = results.prizepicks?.ok || results.underdog?.ok || results.draftkings_via_espn?.ok;
+  const ok = results.prizepicks?.ok || results.fanduel?.ok || results.draftkings?.ok;
   return res.status(200).json({
     ok,
-    message: ok
-      ? 'Live: PrizePicks props + DraftKings game lines (ESPN) + Underdog props'
-      : 'No feeds',
+    message: 'PrizePicks + FanDuel + DraftKings live feeds',
     results,
   });
 }

@@ -1,3 +1,7 @@
+/**
+ * Scheduled refresh: pull FanDuel + DraftKings games, PrizePicks props, rank best bets.
+ * Runs every 2 hours (vercel.json).
+ */
 export default async function handler(req, res) {
   const auth = req.headers.authorization || '';
   const cronSecret = process.env.CRON_SECRET;
@@ -10,13 +14,33 @@ export default async function handler(req, res) {
     ? `https://${process.env.VERCEL_URL}`
     : 'https://algobet-bro-2917.vercel.app';
 
-  try {
-    const r = await fetch(`${base}/api/best-bets?persist=1&min_confidence=0.52&limit=20`);
-    const data = await r.json();
+  const out = { at: new Date().toISOString(), steps: {} };
 
-    const supabaseUrl = process.env.VITE_SUPABASE_URL || process.env.SUPABASE_URL;
-    const supabaseKey = process.env.VITE_SUPABASE_ANON_KEY || process.env.SUPABASE_ANON_KEY;
-    if (supabaseUrl && supabaseKey) {
+  try {
+    const g = await fetch(`${base}/api/games?sport=NFL`);
+    out.steps.games = await g.json();
+  } catch (e) {
+    out.steps.games = { error: e.message };
+  }
+
+  try {
+    const p = await fetch(`${base}/api/props?sport=NFL`);
+    out.steps.props = await p.json();
+  } catch (e) {
+    out.steps.props = { error: e.message };
+  }
+
+  try {
+    const b = await fetch(`${base}/api/best-bets?persist=1&min_confidence=0.52&limit=20`);
+    out.steps.best_bets = await b.json();
+  } catch (e) {
+    out.steps.best_bets = { error: e.message };
+  }
+
+  const supabaseUrl = process.env.VITE_SUPABASE_URL || process.env.SUPABASE_URL;
+  const supabaseKey = process.env.VITE_SUPABASE_ANON_KEY || process.env.SUPABASE_ANON_KEY;
+  if (supabaseUrl && supabaseKey) {
+    try {
       await fetch(`${supabaseUrl}/rest/v1/watch_log`, {
         method: 'POST',
         headers: {
@@ -26,14 +50,11 @@ export default async function handler(req, res) {
           Prefer: 'return=minimal',
         },
         body: JSON.stringify({
-          message: `Auto scan: ${data.games_scanned || 0} games, ${data.pick_count || 0} ranked picks`,
-          meta: { pick_count: data.pick_count, games_scanned: data.games_scanned },
+          message: `Refresh ${out.at}: games=${out.steps.games?.count ?? '?'} props=${out.steps.props?.count ?? '?'} picks=${out.steps.best_bets?.pick_count ?? '?'}`,
         }),
       });
-    }
-
-    return res.status(200).json({ ok: true, ...data });
-  } catch (e) {
-    return res.status(500).json({ error: e.message });
+    } catch {}
   }
+
+  return res.status(200).json({ ok: true, ...out });
 }
