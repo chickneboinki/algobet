@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
 import { api } from '../services/api'
+import { confidenceWord, confidenceColor } from '../lib/algoInfo'
 
 const SPORTS = ['ALL', 'NFL', 'NCAAF', 'NCAAB', 'NBA', 'MLB', 'NHL']
 
@@ -93,28 +94,22 @@ export default function BestBetsPage() {
 
   return (
     <div className="space-y-4 pb-8">
-      <div className="card">
-        <div className="flex items-start justify-between gap-3">
-          <div>
-            <p className="label mb-1">Today</p>
-            <h2 className="text-lg font-semibold">Best ranked picks</h2>
-            <p className="hint mt-1">Tools run on lines. Filter by league — each tool only fires where it belongs.</p>
-          </div>
-          <button type="button" className="btn-ghost text-sm shrink-0" onClick={load}>
-            Refresh
-          </button>
-        </div>
-        {data && (
-          <p className="text-xs text-zinc-500 mt-3">
-            Scanned {data.games_scanned} games · {picks.length} shown
-            {sport !== 'ALL' ? ` (${sport})` : ''}
+      <div className="flex items-start justify-between gap-3">
+        <div>
+          <h2 className="page-title">Best picks</h2>
+          <p className="hint mt-1">
+            The strongest picks from all tools, best first.
+            {data ? ` Checked ${data.games_scanned} games.` : ''}
           </p>
-        )}
+        </div>
+        <button type="button" className="btn-ghost shrink-0" onClick={load}>
+          Refresh
+        </button>
       </div>
 
       {toast && <div className="toast">{toast}</div>}
 
-      <div className="flex gap-2 overflow-x-auto pb-1 no-scrollbar">
+      <div className="flex gap-2 overflow-x-auto pb-1 no-scrollbar -mx-4 px-4">
         {SPORTS.map((s) => (
           <button key={s} type="button" onClick={() => setSport(s)} className={`chip ${sport === s ? 'chip-on' : 'chip-off'}`}>
             {s === 'ALL' ? 'All' : s}
@@ -127,7 +122,7 @@ export default function BestBetsPage() {
       {!error && picks.length === 0 && (
         <div className="card">
           <p className="font-medium">No strong picks{sport !== 'ALL' ? ` for ${sport}` : ''} right now</p>
-          <p className="hint mt-1">Try another league or open Games and run tools on a matchup.</p>
+          <p className="hint mt-1">Try another league, or open Games and check a matchup yourself.</p>
         </div>
       )}
 
@@ -153,22 +148,18 @@ export default function BestBetsPage() {
               </p>
               <p className="text-xl font-semibold mt-1 tracking-tight">{pickTeam}</p>
               <p className="text-sm text-zinc-400 mt-0.5">
-                {p.algorithm_name}
+                Pick from {p.algorithm_name}
                 {ml != null && <span className="odds-num text-zinc-300"> · {fmtOdds(ml)}</span>}
               </p>
             </div>
-            <div className="grid grid-cols-3 gap-2">
+            <div className="grid grid-cols-2 gap-2">
               <div className="stat-box">
-                <p className="label">How sure</p>
-                <p className="text-base font-semibold mt-1">{Math.round((p.confidence || 0) * 100)}%</p>
+                <p className="label">Confidence</p>
+                <p className={`text-base font-semibold mt-1 ${confidenceColor(p.confidence)}`}>{confidenceWord(p.confidence)}</p>
               </div>
               <div className="stat-box">
-                <p className="label">Edge</p>
-                <p className="text-base font-semibold mt-1">{((p.expected_value || 0) * 100).toFixed(1)}%</p>
-              </div>
-              <div className="stat-box">
-                <p className="label">Score</p>
-                <p className="text-base font-semibold mt-1">{(p.score || 0).toFixed(2)}</p>
+                <p className="label">Value edge</p>
+                <p className="text-base font-semibold mt-1">+{((p.expected_value || 0) * 100).toFixed(1)}%</p>
               </div>
             </div>
             <p className="hint">{p.reasoning}</p>

@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
 import { api } from '../services/api'
+import { algoInfo, teamFor, confidenceWord, confidenceColor } from '../lib/algoInfo'
 
 const SPORTS = ['NFL', 'NCAAF', 'NCAAB', 'NBA', 'MLB', 'NHL']
 
@@ -212,169 +213,179 @@ export default function GamesPage() {
     const bets = Array.isArray(selected.bets) ? selected.bets : []
     const when = formatWhen(selected.start_time || selected.commence_time)
     const picks = toolResults.filter((t) => t.recommended_side && t.recommended_side !== 'none')
+    const hasRun = toolResults.length > 0
 
     return (
       <div className="space-y-4 pb-8">
-        <button type="button" onClick={() => setSelected(null)} className="text-sky-400 text-sm font-medium">
-          ← Back to games
+        <button type="button" onClick={() => setSelected(null)} className="text-sky-400 text-[15px] font-medium py-1">
+          ‹ All games
         </button>
 
-        <div className="card space-y-2 text-center">
-          <p className="text-xs font-semibold text-sky-400 uppercase tracking-wide">{selected.sport || sport}</p>
-          <p className="text-lg font-semibold leading-snug">{selected.away_team || 'Away'}</p>
+        {/* Matchup */}
+        <div className="card text-center space-y-1">
+          <span className="pill">{selected.sport || sport}</span>
+          <p className="text-lg font-semibold leading-snug pt-2">{selected.away_team || 'Away'}</p>
           <p className="text-zinc-500 text-sm">at</p>
           <p className="text-lg font-semibold leading-snug">{selected.home_team || 'Home'}</p>
-          <p className="text-sky-300 font-medium text-sm pt-1">{when}</p>
+          <p className="text-sky-300 font-medium text-sm pt-2">{when}</p>
         </div>
 
-        {/* Lines */}
+        {/* Step 1: picks */}
         <div className="card space-y-3">
-          <p className="font-semibold">Live lines on this site</p>
-          {Object.entries(books).map(([key, b]: [string, any]) => (
-            <div key={key} className="rounded-xl border border-white/10 bg-white/[0.04] p-3 space-y-2">
-              <p
-                className="text-sm font-bold"
-                style={{ color: key.includes('fan') ? '#1493ff' : key.includes('draft') ? '#53d337' : '#93c5fd' }}
-              >
-                {b?.title || key}
-              </p>
-              <div className="grid grid-cols-2 gap-2 text-sm">
-                <div className="rounded-lg bg-black/30 p-2 text-center">
-                  <p className="text-[10px] text-zinc-500 uppercase">Home ML</p>
-                  <p className="font-bold odds-num">{oddsLabel(b?.ml_home)}</p>
+          <div>
+            <p className="font-semibold text-[15px]">Tool picks</p>
+            <p className="hint mt-1">Every tool checks this game. If one sees an edge, it gives a pick.</p>
+          </div>
+          <button type="button" className="btn-primary" disabled={runningAll} onClick={runAllTools}>
+            {runningAll ? 'Checking…' : hasRun ? 'Run again' : 'Check this game'}
+          </button>
+
+          {picks.map((r) => (
+            <div key={r.algorithm_id} className="rounded-2xl border border-emerald-500/25 bg-emerald-500/[0.06] p-4 space-y-2">
+              <div className="flex items-start justify-between gap-3">
+                <div className="min-w-0">
+                  <p className="label">{r.algorithm_name} says</p>
+                  <p className="text-lg font-semibold tracking-tight mt-0.5">
+                    {teamFor(r.recommended_side, selected.home_team, selected.away_team)}
+                  </p>
                 </div>
-                <div className="rounded-lg bg-black/30 p-2 text-center">
-                  <p className="text-[10px] text-zinc-500 uppercase">Away ML</p>
-                  <p className="font-bold odds-num">{oddsLabel(b?.ml_away)}</p>
-                </div>
-                <div className="rounded-lg bg-black/30 p-2 text-center">
-                  <p className="text-[10px] text-zinc-500 uppercase">Spread</p>
-                  <p className="font-bold odds-num">{b?.spread != null ? oddsLabel(b.spread) : '—'}</p>
-                </div>
-                <div className="rounded-lg bg-black/30 p-2 text-center">
-                  <p className="text-[10px] text-zinc-500 uppercase">Total</p>
-                  <p className="font-bold odds-num">{b?.total != null ? b.total : '—'}</p>
-                </div>
+                <span className={`text-sm font-semibold shrink-0 ${confidenceColor(r.confidence)}`}>
+                  {confidenceWord(r.confidence)}
+                </span>
               </div>
-            </div>
-          ))}
-          {bets.slice(0, 12).map((bet: any, i: number) => (
-            <div key={i} className="flex justify-between text-sm border-b border-white/5 py-1.5">
-              <span className="text-zinc-400 truncate">
-                {bet.book} · {bet.market} · {bet.selection}
-                {bet.line != null ? ` ${bet.line}` : ''}
-              </span>
-              <span className="odds-num text-sky-300 font-semibold">{oddsLabel(bet.odds)}</span>
-            </div>
-          ))}
-        </div>
-
-        {/* Run tools */}
-        <div className="card space-y-3">
-          <div className="flex items-center justify-between gap-2">
-            <div>
-              <p className="font-semibold">Run tools (algorithms)</p>
-              <p className="hint text-xs">Each tool scores this game. Then AI can explain the best lean.</p>
-            </div>
-            <button type="button" className="btn-primary text-sm shrink-0" disabled={runningAll} onClick={runAllTools}>
-              {runningAll ? 'Running…' : 'Run all'}
-            </button>
-          </div>
-          <div className="space-y-2">
-            {algos.map((a) => (
-              <button
-                key={a.id}
-                type="button"
-                disabled={runningId === a.id || runningAll}
-                onClick={() => runOne(a.id)}
-                className="w-full text-left rounded-xl border border-white/10 bg-white/[0.03] px-3 py-2.5 disabled:opacity-50"
-              >
-                <div className="flex justify-between">
-                  <span className="font-medium text-sm">{a.name}</span>
-                  <span className="text-sky-400 text-sm">{runningId === a.id ? '…' : 'Run'}</span>
-                </div>
-                <p className="text-[11px] text-zinc-500 mt-0.5 line-clamp-1">{a.description}</p>
+              <p className="text-sm text-zinc-300">{r.reasoning}</p>
+              <button type="button" className="btn-ghost w-full" onClick={() => saveResult(r)}>
+                Save this bet
               </button>
-            ))}
-          </div>
+            </div>
+          ))}
 
-          {picks.length > 0 && (
-            <div className="space-y-2 pt-1">
-              <p className="text-xs font-semibold text-emerald-400 uppercase">Tool picks</p>
-              {picks.map((r) => (
-                <div key={r.algorithm_id} className="rounded-xl border border-emerald-500/20 bg-emerald-500/5 p-3 space-y-2">
-                  <p className="font-semibold text-sm">
-                    {r.algorithm_name}: <span className="uppercase text-sky-300">{r.recommended_side}</span>
-                  </p>
-                  <p className="text-xs text-zinc-400">
-                    Sure {Math.round((r.confidence || 0) * 100)}% · Edge {((r.expected_value || 0) * 100).toFixed(1)}%
-                  </p>
-                  <p className="text-sm text-zinc-300">{r.reasoning}</p>
-                  <button type="button" className="btn-ghost text-sm w-full" onClick={() => saveResult(r)}>
-                    Save this pick
-                  </button>
-                </div>
+          {hasRun && picks.length === 0 && (
+            <p className="text-sm text-zinc-400 bg-white/[0.03] rounded-xl p-3">
+              No tool sees an edge here. Passing on a game is a fine call.
+            </p>
+          )}
+
+          <details className="group">
+            <summary className="text-sm text-sky-400 cursor-pointer py-1 list-none">Run one tool at a time ›</summary>
+            <div className="space-y-2 pt-2">
+              {algos.map((a) => (
+                <button
+                  key={a.id}
+                  type="button"
+                  disabled={runningId === a.id || runningAll}
+                  onClick={() => runOne(a.id)}
+                  className="w-full text-left rounded-xl border border-white/10 bg-white/[0.03] px-3.5 py-3 disabled:opacity-50"
+                >
+                  <div className="flex justify-between gap-2">
+                    <span className="font-medium text-sm">{a.name}</span>
+                    <span className="text-sky-400 text-sm">{runningId === a.id ? '…' : 'Run'}</span>
+                  </div>
+                  <p className="text-xs text-zinc-500 mt-0.5">{algoInfo(a.id)?.what || a.description}</p>
+                </button>
               ))}
             </div>
-          )}
-          {toolResults.length > 0 && picks.length === 0 && (
-            <p className="text-sm text-zinc-400">Tools ran — no strong edge (they passed).</p>
-          )}
+          </details>
         </div>
 
-        {/* AI chat */}
+        {/* AI */}
         <div className="card space-y-3">
-          <p className="font-semibold">AI on this game</p>
-          <p className="hint text-xs">Ask what the tools mean, or get a plain-English best bet.</p>
-          <div className="space-y-2 max-h-64 overflow-y-auto">
-            {chatLog.length === 0 && (
-              <p className="text-sm text-zinc-500">Tap “Run all” above, or type a question.</p>
-            )}
-            {chatLog.map((m, i) => (
-              <div
-                key={i}
-                className={`rounded-xl px-3 py-2 text-sm ${m.role === 'you' ? 'bg-sky-500/15 text-sky-100 ml-6' : 'bg-white/5 text-zinc-200 mr-4'}`}
-              >
-                {m.text}
-              </div>
-            ))}
-            {chatBusy && <p className="text-xs text-zinc-500">AI thinking…</p>}
+          <div>
+            <p className="font-semibold text-[15px]">Ask AI</p>
+            <p className="hint mt-1">Get the picks explained in plain English, or ask your own question.</p>
           </div>
+          {(chatLog.length > 0 || chatBusy) && (
+            <div className="space-y-2 max-h-72 overflow-y-auto">
+              {chatLog.map((m, i) => (
+                <div
+                  key={i}
+                  className={`rounded-2xl px-3.5 py-2.5 text-sm leading-relaxed ${
+                    m.role === 'you' ? 'bg-sky-500/15 text-sky-100 ml-8' : 'bg-white/[0.05] text-zinc-200 mr-4'
+                  }`}
+                >
+                  {m.text}
+                </div>
+              ))}
+              {chatBusy && <p className="text-xs text-zinc-500 px-1">Thinking…</p>}
+            </div>
+          )}
           <div className="flex gap-2">
             <input
               value={chatInput}
               onChange={(e) => setChatInput(e.target.value)}
               onKeyDown={(e) => e.key === 'Enter' && sendChat()}
-              placeholder="e.g. What’s the best side and why?"
-              className="flex-1 bg-black/40 border border-white/10 rounded-xl px-3 py-2.5 text-sm focus:outline-none focus:border-sky-500/50"
+              placeholder="Who should I take and why?"
+              className="flex-1 min-w-0"
             />
-            <button type="button" className="btn-primary shrink-0" disabled={chatBusy || !chatInput.trim()} onClick={sendChat}>
-              Send
+            <button type="button" className="btn-primary !w-auto px-5" disabled={chatBusy || !chatInput.trim()} onClick={sendChat}>
+              Ask
             </button>
           </div>
         </div>
 
+        {/* Lines */}
+        <div className="card space-y-3">
+          <p className="font-semibold text-[15px]">Odds</p>
+          {Object.keys(books).length === 0 && <p className="hint">No odds available for this game yet.</p>}
+          {Object.entries(books).map(([key, b]: [string, any]) => (
+            <div key={key} className="rounded-xl bg-white/[0.03] border border-white/[0.06] p-3 space-y-2">
+              <p className="text-sm font-semibold" style={{ color: key.includes('fan') ? '#4aa8ff' : key.includes('draft') ? '#5fdc45' : '#93c5fd' }}>
+                {b?.title || key}
+              </p>
+              <div className="grid grid-cols-4 gap-2 text-center">
+                {[
+                  ['Home', oddsLabel(b?.ml_home)],
+                  ['Away', oddsLabel(b?.ml_away)],
+                  ['Spread', b?.spread != null ? oddsLabel(b.spread) : '—'],
+                  ['Total', b?.total != null ? String(b.total) : '—'],
+                ].map(([label, val]) => (
+                  <div key={label} className="rounded-lg bg-black/25 py-2">
+                    <p className="text-[10px] text-zinc-500 uppercase tracking-wide">{label}</p>
+                    <p className="font-semibold odds-num text-sm mt-0.5">{val}</p>
+                  </div>
+                ))}
+              </div>
+            </div>
+          ))}
+          {bets.length > 0 && (
+            <details>
+              <summary className="text-sm text-sky-400 cursor-pointer py-1 list-none">More lines ›</summary>
+              <div className="pt-1">
+                {bets.slice(0, 12).map((bet: any, i: number) => (
+                  <div key={i} className="flex justify-between gap-3 text-sm border-b border-white/5 py-2">
+                    <span className="text-zinc-400 truncate">
+                      {bet.book} · {bet.market} · {bet.selection}
+                      {bet.line != null ? ` ${bet.line}` : ''}
+                    </span>
+                    <span className="odds-num text-sky-300 font-semibold shrink-0">{oddsLabel(bet.odds)}</span>
+                  </div>
+                ))}
+              </div>
+            </details>
+          )}
+        </div>
+
         {/* Props */}
         <div className="card space-y-3">
-          <p className="font-semibold">Player bets</p>
+          <p className="font-semibold text-[15px]">Player bets</p>
           {propsLoading && <p className="text-sm text-zinc-500">Loading…</p>}
-          {propsNote && <p className="text-[11px] text-zinc-500">{propsNote}</p>}
+          {!propsLoading && propsList.length === 0 && <p className="hint">No player bets available for this game.</p>}
           {propsList.slice(0, 30).map((prop: any) => (
-            <div key={prop.id || `${prop.player}-${prop.line}`} className="rounded-xl border border-white/10 p-3 space-y-2">
-              <div className="flex justify-between">
-                <div>
-                  <p className="font-semibold">{prop.player}</p>
+            <div key={prop.id || `${prop.player}-${prop.line}`} className="rounded-xl border border-white/[0.08] p-3 space-y-2.5">
+              <div className="flex justify-between gap-3">
+                <div className="min-w-0">
+                  <p className="font-semibold text-[15px] truncate">{prop.player}</p>
                   <p className="text-xs text-zinc-500">
                     {prop.market_label || prop.market} · {prop.book}
                   </p>
                 </div>
-                <p className="text-lg font-bold text-sky-300 odds-num">{prop.line}</p>
+                <p className="text-lg font-bold text-sky-300 odds-num shrink-0">{prop.line}</p>
               </div>
               <div className="grid grid-cols-2 gap-2">
-                <button type="button" className="rounded-xl border border-emerald-500/30 bg-emerald-500/10 py-2" onClick={() => saveProp(prop, 'over')}>
+                <button type="button" className="rounded-xl border border-emerald-500/30 bg-emerald-500/10 py-3 text-sm font-medium" onClick={() => saveProp(prop, 'over')}>
                   Over {oddsLabel(prop.over)}
                 </button>
-                <button type="button" className="rounded-xl border border-rose-500/30 bg-rose-500/10 py-2" onClick={() => saveProp(prop, 'under')}>
+                <button type="button" className="rounded-xl border border-rose-500/30 bg-rose-500/10 py-3 text-sm font-medium" onClick={() => saveProp(prop, 'under')}>
                   Under {oddsLabel(prop.under)}
                 </button>
               </div>
@@ -382,28 +393,34 @@ export default function GamesPage() {
           ))}
         </div>
 
-        {toast && (
-          <div className="fixed bottom-24 left-1/2 -translate-x-1/2 z-50 bg-sky-500 text-black px-4 py-2 rounded-full text-sm font-semibold">
-            {toast}
-          </div>
-        )}
+        {toast && <div className="toast">{toast}</div>}
       </div>
     )
   }
 
   return (
-    <div className="space-y-3.5 pb-8">
-      <div className="flex gap-2 overflow-x-auto pb-1">
+    <div className="space-y-4 pb-8">
+      <div>
+        <h2 className="page-title">Games</h2>
+        <p className="hint mt-1">Pick a league, then tap a game to check it.</p>
+      </div>
+
+      <div className="flex gap-2 overflow-x-auto pb-1 no-scrollbar -mx-4 px-4">
         {SPORTS.map((s) => (
           <button key={s} type="button" onClick={() => setSport(s)} className={`chip ${sport === s ? 'chip-on' : 'chip-off'}`}>
             {s}
           </button>
         ))}
       </div>
-      {source ? <p className="text-xs text-emerald-400/90">Live: {source}</p> : null}
-      {note ? <p className="text-xs text-zinc-500">{note}</p> : null}
+
       {error ? <p className="text-sm text-rose-400">{error}</p> : null}
       {loading ? <p className="text-center text-zinc-500 py-12 text-sm">Loading games…</p> : null}
+      {!loading && !error && games.length === 0 && (
+        <div className="card text-center space-y-1">
+          <p className="font-medium">No {sport} games right now</p>
+          <p className="hint">{note || 'Try another league.'}</p>
+        </div>
+      )}
 
       <div className="space-y-2.5">
         {games.map((g) => {
@@ -411,27 +428,20 @@ export default function GamesPage() {
           const fd = books.fanduel
           const dk = books.draftkings
           return (
-            <button key={g.id} type="button" onClick={() => openGame(g)} className="card w-full text-left space-y-2">
-              <p className="font-semibold text-[15px]">
-                {g.away_team} <span className="text-zinc-500 font-normal">at</span> {g.home_team}
-              </p>
-              <p className="text-xs text-zinc-300">
-                <span className="text-sky-400 font-semibold">{g.sport || sport}</span>
-                <span className="mx-1.5 text-zinc-600">·</span>
-                {formatWhen(g.start_time || g.commence_time)}
-              </p>
-              <div className="flex flex-wrap gap-2">
-                {fd && (
-                  <span className="text-[11px] rounded-lg bg-sky-500/15 text-sky-300 px-2 py-1">
-                    FD {oddsLabel(fd.ml_home)}/{oddsLabel(fd.ml_away)}
-                  </span>
-                )}
-                {dk && (
-                  <span className="text-[11px] rounded-lg bg-emerald-500/15 text-emerald-300 px-2 py-1">
-                    DK {oddsLabel(dk.ml_home)}/{oddsLabel(dk.ml_away)}
-                  </span>
-                )}
+            <button key={g.id} type="button" onClick={() => openGame(g)} className="card w-full text-left space-y-2 active:bg-white/[0.04]">
+              <div className="flex items-start justify-between gap-3">
+                <p className="font-semibold text-[15px] leading-snug">
+                  {g.away_team} <span className="text-zinc-500 font-normal">at</span> {g.home_team}
+                </p>
+                <span className="text-zinc-600 text-lg leading-none">›</span>
               </div>
+              <p className="text-xs text-zinc-400">{formatWhen(g.start_time || g.commence_time)}</p>
+              {(fd || dk) && (
+                <div className="flex flex-wrap gap-2 pt-0.5">
+                  {fd && <span className="pill">FanDuel {oddsLabel(fd.ml_home)} / {oddsLabel(fd.ml_away)}</span>}
+                  {dk && <span className="pill">DraftKings {oddsLabel(dk.ml_home)} / {oddsLabel(dk.ml_away)}</span>}
+                </div>
+              )}
             </button>
           )
         })}

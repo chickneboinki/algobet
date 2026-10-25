@@ -71,10 +71,9 @@ export default function BankrollPage() {
 
   return (
     <div className="space-y-4 pb-8">
-      <div className="card space-y-2">
-        <p className="label">Bankroll</p>
-        <h2 className="text-lg font-semibold">Your money tracker</h2>
-        <p className="hint">Set a starting bankroll and unit size. Settled bets update your total.</p>
+      <div>
+        <h2 className="page-title">Bank</h2>
+        <p className="hint mt-1">Your money so far. Set your starting amount and unit (one standard bet size).</p>
       </div>
 
       <div className="grid grid-cols-2 gap-2">
@@ -105,14 +104,14 @@ export default function BankrollPage() {
       </div>
 
       <div className="card space-y-3">
-        <p className="font-semibold text-sm">Settings</p>
+        <p className="font-semibold text-[15px]">Settings</p>
         <label className="block text-sm">
           <span className="text-zinc-400">Starting bankroll ($)</span>
           <input
             value={start}
             onChange={(e) => setStart(e.target.value)}
             type="number"
-            className="mt-1 w-full bg-black/40 border border-white/10 rounded-xl px-3 py-2.5"
+            className="mt-1 w-full"
           />
         </label>
         <label className="block text-sm">
@@ -121,7 +120,7 @@ export default function BankrollPage() {
             value={unit}
             onChange={(e) => setUnit(e.target.value)}
             type="number"
-            className="mt-1 w-full bg-black/40 border border-white/10 rounded-xl px-3 py-2.5"
+            className="mt-1 w-full"
           />
         </label>
         <button type="button" className="btn-primary" onClick={saveBankroll}>
@@ -135,7 +134,7 @@ export default function BankrollPage() {
       </div>
 
       <div className="card space-y-2">
-        <p className="font-semibold text-sm">By tool</p>
+        <p className="font-semibold text-[15px]">Which tools are working</p>
         {toolRows.length === 0 && <p className="hint">Settle some bets to see which tools make money.</p>}
         {toolRows.map(([name, s]) => (
           <div key={name} className="flex justify-between text-sm border-b border-white/5 py-2">

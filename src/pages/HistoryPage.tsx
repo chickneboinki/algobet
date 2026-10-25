@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
 import { api } from '../services/api'
+import { teamFor } from '../lib/algoInfo'
 
 export default function HistoryPage() {
   const [bets, setBets] = useState<any[]>([])
@@ -63,17 +64,15 @@ export default function HistoryPage() {
 
   return (
     <div className="space-y-4 pb-8">
-      <div className="card space-y-2">
-        <h2 className="font-semibold text-lg">Your tracked bets</h2>
-        <p className="hint">Mark results by hand, or auto-settle finished home/away picks from final scores.</p>
+      <div>
+        <h2 className="page-title">My bets</h2>
+        <p className="hint mt-1">Mark each bet Won, Lost or Push when the game ends — or let the app check final scores for you.</p>
+      </div>
+      <div className="space-y-2">
         <button type="button" className="btn-primary" disabled={settling} onClick={autoSettle}>
-          {settling ? 'Checking scores…' : 'Auto-settle finished games'}
+          {settling ? 'Checking scores…' : 'Check finished games'}
         </button>
         {settleMsg && <p className="text-sm text-sky-400">{settleMsg}</p>}
-        <p className="hint text-xs">
-          Also see <span className="text-zinc-300">Bankroll</span> on the bottom nav (under Bets flow / Setup link) — open
-          /bankroll from Setup if needed.
-        </p>
       </div>
 
       {bets.length > 0 && (
@@ -82,7 +81,7 @@ export default function HistoryPage() {
             <div className="text-xl font-bold text-sky-300">
               {wins}-{losses}
             </div>
-            <div className="label mt-1">Wins–Losses</div>
+            <div className="label mt-1">Record</div>
           </div>
           <div className="stat-box">
             <div className="text-xl font-bold text-sky-300">
@@ -93,7 +92,7 @@ export default function HistoryPage() {
           </div>
           <div className="stat-box">
             <div className="text-xl font-bold text-sky-300">{bets.filter((b) => b.status === 'pending').length}</div>
-            <div className="label mt-1">Open</div>
+            <div className="label mt-1">Open bets</div>
           </div>
         </div>
       )}
@@ -103,7 +102,7 @@ export default function HistoryPage() {
       {!loading && bets.length === 0 && (
         <div className="card text-center py-12 space-y-2">
           <p className="font-medium text-lg">No bets yet</p>
-          <p className="hint">Open a game → run a tool → save the bet</p>
+          <p className="hint">Open a game, check it, and tap “Save this bet”.</p>
         </div>
       )}
 
@@ -130,24 +129,26 @@ export default function HistoryPage() {
             </div>
             <p className="text-sm text-zinc-400">
               {b.sport ? `${b.sport} · ` : ''}
-              Tool: {b.algorithm_name} ·{' '}
-              <span className="text-sky-300 uppercase">{b.recommended_side || b.side}</span>
+              {b.algorithm_name} ·{' '}
+              <span className="text-sky-300 font-medium">
+                {['home', 'away'].includes(b.recommended_side) ? teamFor(b.recommended_side, b.home_team, b.away_team) : b.side || b.recommended_side}
+              </span>
             </p>
             {b.settle_note && <p className="text-[11px] text-zinc-500">{b.settle_note}</p>}
             {b.status === 'pending' ? (
               <div className="flex gap-2 pt-1">
-                <button onClick={() => settle(b, 'won')} className="flex-1 text-sm py-2.5 rounded-xl bg-green-500/20 text-green-400 font-semibold">
+                <button onClick={() => settle(b, 'won')} className="flex-1 text-sm py-3 rounded-xl bg-green-500/20 text-green-400 font-semibold">
                   Won
                 </button>
-                <button onClick={() => settle(b, 'lost')} className="flex-1 text-sm py-2.5 rounded-xl bg-red-500/20 text-red-400 font-semibold">
+                <button onClick={() => settle(b, 'lost')} className="flex-1 text-sm py-3 rounded-xl bg-red-500/20 text-red-400 font-semibold">
                   Lost
                 </button>
-                <button onClick={() => settle(b, 'push')} className="flex-1 text-sm py-2.5 rounded-xl bg-zinc-500/20 text-zinc-300 font-medium">
+                <button onClick={() => settle(b, 'push')} className="flex-1 text-sm py-3 rounded-xl bg-zinc-500/20 text-zinc-300 font-medium">
                   Push
                 </button>
               </div>
             ) : (
-              <button onClick={() => remove(b.id)} className="text-xs text-zinc-500">
+              <button onClick={() => remove(b.id)} className="text-sm text-zinc-500 py-1">
                 Remove
               </button>
             )}

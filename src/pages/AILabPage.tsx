@@ -81,9 +81,8 @@ export default function AILabPage() {
   return (
     <div className="space-y-4 pb-8">
       <div className="card space-y-3">
-        <p className="label">AI Lab</p>
-        <h2 className="text-lg font-semibold">Build a new tool</h2>
-        <p className="hint">Describe a strategy. It saves automatically so you can rename it and test it on games.</p>
+        <h2 className="page-title">AI</h2>
+        <p className="hint">Describe a betting idea in your own words. AI turns it into a tool and saves it under Tools.</p>
         <div className="flex flex-wrap gap-2">
           {['NFL', 'NCAAF', 'NCAAB', 'NBA', 'MLB', 'NHL'].map((s) => (
             <button key={s} type="button" className={`chip ${sports.includes(s) ? 'chip-on' : 'chip-off'}`} onClick={() => toggleSport(s)}>
@@ -94,11 +93,11 @@ export default function AILabPage() {
         <textarea
           value={prompt}
           onChange={(e) => setPrompt(e.target.value)}
-          placeholder="Example: NFL home underdogs when FanDuel is softer than DraftKings"
-          className="w-full bg-black/40 border border-white/10 rounded-xl p-3 text-sm min-h-[120px] focus:outline-none focus:border-sky-500/50"
+          placeholder="Example: NFL home underdogs when FanDuel has a better price than DraftKings"
+          className="w-full min-h-[120px]"
         />
         <button type="button" onClick={generate} disabled={generating || !prompt.trim()} className="btn-primary disabled:opacity-50">
-          {generating ? 'Working…' : 'Generate & save tool'}
+          {generating ? 'Working…' : 'Create tool'}
         </button>
         {error && <p className="text-red-400 text-sm">{error}</p>}
         {saveMsg && <p className="text-sm text-emerald-400/90">{saveMsg}</p>}
@@ -111,14 +110,14 @@ export default function AILabPage() {
           {(generated.sports || sports)?.length > 0 && (
             <p className="text-xs text-sky-400">Leagues: {(generated.sports || sports).join(', ')}</p>
           )}
-          {saved?.id && <p className="text-xs text-zinc-500">Saved id: {saved.id}</p>}
         </div>
       )}
 
       <div className="card space-y-3">
-        <h2 className="text-lg font-semibold">Learn from your results</h2>
+        <p className="font-semibold text-[15px]">Learn from my results</p>
+        <p className="hint">AI looks at your settled bets and tells you what is working.</p>
         <button type="button" onClick={analyze} disabled={analyzing} className="btn-ghost w-full disabled:opacity-50">
-          {analyzing ? 'Reviewing…' : 'Review my history'}
+          {analyzing ? 'Reviewing…' : 'Review my bets'}
         </button>
         {insight && (
           <div className="space-y-2">

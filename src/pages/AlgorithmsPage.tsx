@@ -1,23 +1,22 @@
 import { useEffect, useState } from 'react'
 import { api } from '../services/api'
+import { algoInfo } from '../lib/algoInfo'
 
 export default function AlgorithmsPage() {
   const [algos, setAlgos] = useState<any[]>([])
   const [custom, setCustom] = useState<any[]>([])
   const [loading, setLoading] = useState(true)
+  const [open, setOpen] = useState<string | null>(null)
   const [renameId, setRenameId] = useState<string | null>(null)
   const [renameVal, setRenameVal] = useState('')
-  const [testLog, setTestLog] = useState<string>('')
+  const [testLog, setTestLog] = useState('')
   const [testing, setTesting] = useState(false)
   const [msg, setMsg] = useState('')
 
   const load = async () => {
     setLoading(true)
     try {
-      const [a, c] = await Promise.all([
-        api.algorithms().catch(() => []),
-        api.listCustomTools().catch(() => []),
-      ])
+      const [a, c] = await Promise.all([api.algorithms().catch(() => []), api.listCustomTools().catch(() => [])])
       setAlgos(Array.isArray(a) ? a : [])
       setCustom(Array.isArray(c) ? c : [])
     } finally {
@@ -35,46 +34,34 @@ export default function AlgorithmsPage() {
       await api.renameCustomTool(id, renameVal.trim())
       setRenameId(null)
       setMsg('Renamed')
+      setTimeout(() => setMsg(''), 2000)
       load()
     } catch (e: any) {
       setMsg(e.message || 'Rename failed')
     }
   }
 
-  const autoTest = async (tool?: any) => {
+  const autoTest = async () => {
     setTesting(true)
-    setTestLog('Loading NFL games…')
+    setTestLog('Loading live NFL games…')
     try {
       const g = await api.games('NFL')
       const games = (g.games || []).slice(0, 8)
       const lines: string[] = []
-      const builtIn = tool ? [] : algos
-      const toRun = tool
-        ? [] // custom tools are ideas only for now — run built-ins filtered by sport tags
-        : builtIn
-
       for (const game of games) {
-        for (const a of toRun) {
-          // league filter: if tags mention sport, only run on match
-          const tags = (a.tags || []).map((t: string) => String(t).toLowerCase())
-          const sport = String(game.sport || 'NFL').toLowerCase()
-          if (tags.includes('ncaa') && !sport.includes('ncaa')) continue
-          if (tags.includes('nfl') && sport !== 'nfl' && !tags.includes('evidence')) {
-            /* nfl-engine allows NCAAF too — skip strict */
-          }
+        for (const a of algos) {
           try {
             const r = await api.runAlgo(a.id, game)
             if (r.recommended_side && r.recommended_side !== 'none') {
-              lines.push(
-                `${game.away_team} @ ${game.home_team} → ${a.name}: ${r.recommended_side} (${Math.round((r.confidence || 0) * 100)}%)`
-              )
+              const team = r.recommended_side === 'home' ? game.home_team : game.away_team
+              lines.push(`${a.name} picks ${team} (${game.away_team} at ${game.home_team})`)
             }
           } catch {
             /* skip */
           }
         }
       }
-      setTestLog(lines.length ? lines.join('\n') : 'No picks fired on the sample of games (tools passed).')
+      setTestLog(lines.length ? lines.join('\n') : 'No tool found a pick on these games. That is normal — tools pass when there is no edge.')
     } catch (e: any) {
       setTestLog(e.message || 'Test failed')
     } finally {
@@ -85,84 +72,107 @@ export default function AlgorithmsPage() {
   if (loading) return <div className="card animate-pulse h-40" />
 
   return (
-    <div className="space-y-4 pb-8">
-      <div className="card">
-        <p className="label mb-1">Tools</p>
-        <h2 className="text-lg font-semibold">Playbooks & AI tools</h2>
+    <div className="space-y-5 pb-8">
+      <div>
+        <h2 className="page-title">Tools</h2>
         <p className="hint mt-1">
-          Built-in tools run on Games and Best. AI tools you generate are saved here — rename them anytime.
+          Each tool is one simple idea. It looks at a game’s odds and either gives a pick or says “pass”. Tap a tool to
+          see exactly when it picks.
         </p>
-        <button type="button" className="btn-primary mt-3" disabled={testing} onClick={() => autoTest()}>
-          {testing ? 'Testing…' : 'Auto-test tools on live NFL games'}
+      </div>
+
+      <section className="space-y-2.5">
+        <p className="section-title">Built-in tools</p>
+        {algos.map((a) => {
+          const info = algoInfo(a.id)
+          const isOpen = open === a.id
+          return (
+            <div key={a.id} className="card !p-0 overflow-hidden">
+              <button
+                type="button"
+                className="w-full text-left p-4 flex items-start justify-between gap-3"
+                onClick={() => setOpen(isOpen ? null : a.id)}
+                aria-expanded={isOpen}
+              >
+                <div className="min-w-0">
+                  <p className="font-semibold text-[15px]">{a.name}</p>
+                  <p className="hint mt-1">{info?.what || a.description}</p>
+                </div>
+                <span className={`text-zinc-500 text-lg leading-none mt-0.5 transition-transform ${isOpen ? 'rotate-90' : ''}`}>›</span>
+              </button>
+              {isOpen && info && (
+                <div className="px-4 pb-4 space-y-3 border-t border-white/[0.06] pt-3">
+                  <div>
+                    <p className="label">Picks when</p>
+                    <p className="text-sm text-zinc-200 mt-1">{info.picksWhen}</p>
+                  </div>
+                  <div>
+                    <p className="label">Passes when</p>
+                    <p className="text-sm text-zinc-200 mt-1">{info.skipsWhen}</p>
+                  </div>
+                  <div className="flex gap-2 flex-wrap">
+                    <span className="pill">{info.leagues}</span>
+                    <span className="pill">{info.style}</span>
+                  </div>
+                </div>
+              )}
+            </div>
+          )
+        })}
+      </section>
+
+      <section className="space-y-2.5">
+        <p className="section-title">Your AI tools</p>
+        {custom.length === 0 && (
+          <div className="card">
+            <p className="hint">None yet. Open the AI tab and describe a strategy to create one.</p>
+          </div>
+        )}
+        {custom.map((c) => (
+          <div key={c.id} className="card space-y-2">
+            {renameId === c.id ? (
+              <div className="flex gap-2">
+                <input value={renameVal} onChange={(e) => setRenameVal(e.target.value)} className="flex-1 min-w-0" />
+                <button type="button" className="btn-primary !w-auto px-4" onClick={() => saveRename(c.id)}>
+                  Save
+                </button>
+              </div>
+            ) : (
+              <div className="flex justify-between items-start gap-3">
+                <p className="font-semibold text-[15px]">{c.name}</p>
+                <button
+                  type="button"
+                  className="text-sky-400 text-sm shrink-0 py-1"
+                  onClick={() => {
+                    setRenameId(c.id)
+                    setRenameVal(c.name)
+                  }}
+                >
+                  Rename
+                </button>
+              </div>
+            )}
+            <p className="hint">{c.description}</p>
+            {(c.sports || []).length > 0 && <span className="pill">{(c.sports || []).join(', ')}</span>}
+          </div>
+        ))}
+        {msg && <p className="text-sm text-sky-400">{msg}</p>}
+      </section>
+
+      <section className="card space-y-3">
+        <div>
+          <p className="font-semibold text-[15px]">Try them on live games</p>
+          <p className="hint mt-1">Runs every tool on today’s NFL games and shows who they would pick.</p>
+        </div>
+        <button type="button" className="btn-ghost w-full" disabled={testing} onClick={autoTest}>
+          {testing ? 'Testing…' : 'Run test'}
         </button>
         {testLog && (
-          <pre className="mt-3 text-xs bg-black/40 p-3 rounded-xl whitespace-pre-wrap text-zinc-300 max-h-48 overflow-y-auto">
+          <pre className="text-xs bg-black/30 p-3 rounded-xl whitespace-pre-wrap text-zinc-300 max-h-52 overflow-y-auto font-sans leading-relaxed">
             {testLog}
           </pre>
         )}
-        {msg && <p className="text-sm text-sky-400 mt-2">{msg}</p>}
-      </div>
-
-      <p className="text-xs font-semibold text-zinc-500 uppercase px-0.5">Built-in</p>
-      {algos.map((a) => (
-        <div key={a.id} className="card">
-          <div className="flex items-center justify-between gap-2">
-            <h3 className="font-semibold">{a.name}</h3>
-            <span className="text-[10px] uppercase text-zinc-500">{a.created_by}</span>
-          </div>
-          <p className="hint mt-2">{a.description}</p>
-          {a.tags?.length > 0 && (
-            <div className="flex flex-wrap gap-1.5 mt-3">
-              {a.tags.map((t: string) => (
-                <span key={t} className="chip chip-off text-[11px] py-1 px-2">
-                  {t}
-                </span>
-              ))}
-            </div>
-          )}
-        </div>
-      ))}
-
-      <p className="text-xs font-semibold text-zinc-500 uppercase px-0.5 pt-2">Your AI tools</p>
-      {custom.length === 0 && (
-        <div className="card">
-          <p className="hint">None yet. Go to AI → Generate & save tool.</p>
-        </div>
-      )}
-      {custom.map((c) => (
-        <div key={c.id} className="card space-y-2">
-          {renameId === c.id ? (
-            <div className="flex gap-2">
-              <input
-                value={renameVal}
-                onChange={(e) => setRenameVal(e.target.value)}
-                className="flex-1 bg-black/40 border border-white/10 rounded-lg px-2 py-1.5 text-sm"
-              />
-              <button type="button" className="btn-primary text-sm" onClick={() => saveRename(c.id)}>
-                Save
-              </button>
-            </div>
-          ) : (
-            <div className="flex justify-between items-start gap-2">
-              <h3 className="font-semibold">{c.name}</h3>
-              <button
-                type="button"
-                className="text-sky-400 text-xs"
-                onClick={() => {
-                  setRenameId(c.id)
-                  setRenameVal(c.name)
-                }}
-              >
-                Rename
-              </button>
-            </div>
-          )}
-          <p className="hint text-sm">{c.description}</p>
-          {(c.sports || []).length > 0 && (
-            <p className="text-xs text-sky-400">Leagues: {(c.sports || []).join(', ')}</p>
-          )}
-        </div>
-      ))}
+      </section>
     </div>
   )
 }
