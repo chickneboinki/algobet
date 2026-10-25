@@ -1,20 +1,8 @@
 /**
- * PrizePicks public projections feed (the same JSON the website loads).
- * To confirm current URL: open app.prizepicks.com → Network → filter XHR → "projections".
+ * PrizePicks projections feed (same JSON the site uses).
+ * Find current URL: app.prizepicks.com → F12 Network → filter XHR → "projections"
  */
-const UA = {
-  'User-Agent':
-    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
-  Accept: 'application/json',
-  Origin: 'https://app.prizepicks.com',
-  Referer: 'https://app.prizepicks.com/',
-};
-
-const PP_URL = (single = true, leagueId) => {
-  const q = new URLSearchParams({ single_stat: String(single), per_page: '250' });
-  if (leagueId) q.set('league_id', String(leagueId));
-  return `https://api.prizepicks.com/projections?${q}`;
-};
+const crypto = require('crypto');
 
 const LEAGUE_IDS = {
   NBA: 7,
@@ -23,20 +11,51 @@ const LEAGUE_IDS = {
   NHL: 8,
   NCAAF: 15,
   NCAAB: 20,
+  WNBA: 3,
+  MLS: 10,
 };
 
-async function fetchPrizePicks({ singleStat = true, league = null } = {}) {
-  const leagueId = league ? LEAGUE_IDS[String(league).toUpperCase()] : null;
-  const url = PP_URL(singleStat, leagueId);
-  const res = await fetch(url, { headers: UA });
+function headers() {
+  return {
+    'User-Agent':
+      'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36',
+    Accept: 'application/json',
+    'Content-Type': 'application/json',
+    Origin: 'https://app.prizepicks.com',
+    Referer: 'https://app.prizepicks.com/',
+    'X-Device-ID': crypto.randomUUID(),
+    'sec-ch-ua': '"Not/A)Brand";v="8", "Chromium";v="126", "Google Chrome";v="126"',
+    'sec-ch-ua-mobile': '?0',
+    'sec-ch-ua-platform': '"macOS"',
+  };
+}
+
+function buildUrl({ singleStat = true, league = null, perPage = 250 } = {}) {
+  const q = new URLSearchParams({
+    single_stat: String(singleStat),
+    per_page: String(perPage),
+    game_mode: 'pickem',
+  });
+  const id = league ? LEAGUE_IDS[String(league).toUpperCase()] : null;
+  if (id) q.set('league_id', String(id));
+  return `https://api.prizepicks.com/projections?${q}`;
+}
+
+async function fetchPrizePicks(opts = {}) {
+  const url = buildUrl(opts);
+  const res = await fetch(url, { headers: headers() });
+  const text = await res.text();
   if (!res.ok) {
-    const t = await res.text().catch(() => '');
-    throw new Error(`PrizePicks ${res.status}: ${t.slice(0, 120)}`);
+    throw new Error(`PrizePicks ${res.status}: ${text.slice(0, 160)}`);
   }
-  const body = await res.json();
+  let body;
+  try {
+    body = JSON.parse(text);
+  } catch {
+    throw new Error('PrizePicks returned non-JSON (likely captcha/block page)');
+  }
   const included = body.included || [];
   const data = body.data || [];
-
   const players = {};
   const leagues = {};
   for (const row of included) {
@@ -51,16 +70,13 @@ async function fetchPrizePicks({ singleStat = true, league = null } = {}) {
       leagues[row.id] = row.attributes?.name;
     }
   }
-
   const out = [];
   for (const d of data) {
     const a = d.attributes || {};
-    const playerId = d.relationships?.new_player?.data?.id;
-    const leagueRel = d.relationships?.league?.data?.id;
-    const player = players[playerId] || {};
+    const player = players[d.relationships?.new_player?.data?.id] || {};
+    const sport = leagues[d.relationships?.league?.data?.id] || opts.league || null;
     const line = a.line_score != null ? Number(a.line_score) : null;
     const market = a.stat_type || a.description || 'Prop';
-    const sport = leagues[leagueRel] || league || null;
     const base = {
       source: 'prizepicks',
       eventId: String(a.game_id || d.id),
@@ -83,4 +99,4 @@ async function fetchPrizePicks({ singleStat = true, league = null } = {}) {
   return out;
 }
 
-module.exports = { fetchPrizePicks, LEAGUE_IDS };
+module.exports = { fetchPrizePicks, LEAGUE_IDS, buildUrl };
