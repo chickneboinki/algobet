@@ -7,100 +7,136 @@ function underdog(game) {
   const o = game.odds || {};
   const mlH = o.ml_home ?? -110, mlA = o.ml_away ?? -110;
   const hP = americanToProb(mlH), aP = americanToProb(mlA);
-  const mH = 0.48, mA = 0.52;
-  const hEV = mH - hP, aEV = mA - aP;
+  const hEV = 0.48 - hP, aEV = 0.52 - aP;
   if (aEV > hEV && aEV > 0.03)
-    return { algorithm_id: 'underdog-value-v1', algorithm_name: 'Underdog Value Hunter', recommended_side: 'away', confidence: Math.min(0.82, 0.52 + aEV * 2.2), expected_value: aEV, suggested_stake_units: 1.5, reasoning: `Away underdog shows +${(aEV * 100).toFixed(1)}% edge after juice.`, key_factors: ['Market price', 'Juice'] };
+    return { algorithm_id: 'underdog-value-v1', algorithm_name: 'Underdog Value', recommended_side: 'away', confidence: Math.min(0.82, 0.52 + aEV * 2.2), expected_value: aEV, suggested_stake_units: 1.5, reasoning: `Away shows about ${(aEV * 100).toFixed(1)}% edge after the sportsbook take.`, key_factors: ['Market price'] };
   if (hEV > 0.03)
-    return { algorithm_id: 'underdog-value-v1', algorithm_name: 'Underdog Value Hunter', recommended_side: 'home', confidence: Math.min(0.82, 0.52 + hEV * 2.2), expected_value: hEV, suggested_stake_units: 1.5, reasoning: `Home shows +${(hEV * 100).toFixed(1)}% edge.`, key_factors: ['Market price'] };
-  return { algorithm_id: 'underdog-value-v1', algorithm_name: 'Underdog Value Hunter', recommended_side: 'none', confidence: 0.35, expected_value: 0, suggested_stake_units: 0, reasoning: 'No clear value edge right now.', key_factors: [] };
+    return { algorithm_id: 'underdog-value-v1', algorithm_name: 'Underdog Value', recommended_side: 'home', confidence: Math.min(0.82, 0.52 + hEV * 2.2), expected_value: hEV, suggested_stake_units: 1.5, reasoning: `Home shows about ${(hEV * 100).toFixed(1)}% edge after the sportsbook take.`, key_factors: ['Market price'] };
+  return { algorithm_id: 'underdog-value-v1', algorithm_name: 'Underdog Value', recommended_side: 'none', confidence: 0.35, expected_value: 0, suggested_stake_units: 0, reasoning: 'No clear value edge right now.', key_factors: [] };
 }
 
 function homeAdv(game) {
   const s = (game.sport || '').toUpperCase();
   if (!['NBA', 'NFL', 'NHL', 'NCAAB', 'NCAAF'].includes(s))
-    return { algorithm_id: 'home-advantage-v1', algorithm_name: 'Home Court Edge', recommended_side: 'none', confidence: 0.25, expected_value: 0, suggested_stake_units: 0, reasoning: `Home edge less reliable in ${s}.`, key_factors: [] };
-  return { algorithm_id: 'home-advantage-v1', algorithm_name: 'Home Court Edge', recommended_side: 'home', confidence: 0.58, expected_value: 0.04, suggested_stake_units: 1, reasoning: `Home teams in ${s} often get a small edge the market underprices.`, key_factors: ['Home field/court'] };
+    return { algorithm_id: 'home-advantage-v1', algorithm_name: 'Home Edge', recommended_side: 'none', confidence: 0.25, expected_value: 0, suggested_stake_units: 0, reasoning: `Home edge is less reliable in ${s}.`, key_factors: [] };
+  return { algorithm_id: 'home-advantage-v1', algorithm_name: 'Home Edge', recommended_side: 'home', confidence: 0.56, expected_value: 0.035, suggested_stake_units: 1, reasoning: `Home teams in ${s} often get a small edge the market underprices.`, key_factors: ['Home field or court'] };
 }
 
 function contrarian(game) {
   const o = game.odds || {};
   const mlH = o.ml_home ?? -110, mlA = o.ml_away ?? -110;
   if (mlH <= -200)
-    return { algorithm_id: 'contrarian-public-v1', algorithm_name: 'Contrarian Public Fade', recommended_side: 'away', confidence: 0.56, expected_value: 0.035, suggested_stake_units: 0.75, reasoning: 'Heavy home favorite — public often piles on; tool fades that side.', key_factors: ['Public concentration'] };
+    return { algorithm_id: 'contrarian-public-v1', algorithm_name: 'Fade Heavy Favorite', recommended_side: 'away', confidence: 0.55, expected_value: 0.03, suggested_stake_units: 0.75, reasoning: 'Home is a heavy favorite. This tool fades that side when the public usually piles on.', key_factors: ['Heavy favorite'] };
   if (mlA <= -200)
-    return { algorithm_id: 'contrarian-public-v1', algorithm_name: 'Contrarian Public Fade', recommended_side: 'home', confidence: 0.56, expected_value: 0.035, suggested_stake_units: 0.75, reasoning: 'Heavy away favorite — fading the public side.', key_factors: ['Public concentration'] };
-  return { algorithm_id: 'contrarian-public-v1', algorithm_name: 'Contrarian Public Fade', recommended_side: 'none', confidence: 0.3, expected_value: 0, suggested_stake_units: 0, reasoning: 'No extreme favorite to fade.', key_factors: [] };
+    return { algorithm_id: 'contrarian-public-v1', algorithm_name: 'Fade Heavy Favorite', recommended_side: 'home', confidence: 0.55, expected_value: 0.03, suggested_stake_units: 0.75, reasoning: 'Away is a heavy favorite. Fading that side.', key_factors: ['Heavy favorite'] };
+  return { algorithm_id: 'contrarian-public-v1', algorithm_name: 'Fade Heavy Favorite', recommended_side: 'none', confidence: 0.3, expected_value: 0, suggested_stake_units: 0, reasoning: 'No extreme favorite to fade.', key_factors: [] };
+}
+
+function softLine(game) {
+  const books = game.books || {};
+  const fd = books.fanduel, dk = books.draftkings;
+  if (!fd || !dk)
+    return { algorithm_id: 'soft-line-v1', algorithm_name: 'Soft Line', recommended_side: 'none', confidence: 0.2, expected_value: 0, suggested_stake_units: 0, reasoning: 'Need both FanDuel and DraftKings lines to compare.', key_factors: [] };
+  if (fd.spread_home != null && dk.spread_home != null) {
+    const gap = Math.abs(fd.spread_home - dk.spread_home);
+    if (gap >= 1) {
+      const betterSide = fd.spread_home > dk.spread_home ? 'home' : 'away';
+      return { algorithm_id: 'soft-line-v1', algorithm_name: 'Soft Line', recommended_side: betterSide, confidence: 0.62, expected_value: 0.045, suggested_stake_units: 1, reasoning: `FanDuel and DraftKings disagree on the spread by ${gap} points. Taking the softer number on the ${betterSide} side.`, key_factors: [`Spread gap ${gap}`] };
+    }
+  }
+  if (fd.ml_home != null && dk.ml_home != null && Math.abs(fd.ml_home - dk.ml_home) >= 15) {
+    const betterHome = fd.ml_home > dk.ml_home;
+    return { algorithm_id: 'soft-line-v1', algorithm_name: 'Soft Line', recommended_side: 'home', confidence: 0.58, expected_value: 0.035, suggested_stake_units: 0.75, reasoning: betterHome ? 'FanDuel offers a better home price than DraftKings.' : 'DraftKings offers a better home price than FanDuel.', key_factors: ['Moneyline gap'] };
+  }
+  return { algorithm_id: 'soft-line-v1', algorithm_name: 'Soft Line', recommended_side: 'none', confidence: 0.3, expected_value: 0, suggested_stake_units: 0, reasoning: 'Books are close enough — no soft line.', key_factors: [] };
+}
+
+function homeDog(game) {
+  const o = game.odds || {};
+  const mlH = o.ml_home ?? -110;
+  if (mlH >= 100 && mlH <= 180)
+    return { algorithm_id: 'home-dog-v1', algorithm_name: 'Home Underdog', recommended_side: 'home', confidence: 0.58, expected_value: 0.04, suggested_stake_units: 1, reasoning: `Home underdog at ${mlH > 0 ? '+' : ''}${mlH}. This price band often holds value.`, key_factors: ['Home dog price'] };
+  return { algorithm_id: 'home-dog-v1', algorithm_name: 'Home Underdog', recommended_side: 'none', confidence: 0.25, expected_value: 0, suggested_stake_units: 0, reasoning: 'Home is not a mid-range underdog (+100 to +180).', key_factors: [] };
+}
+
+function blowoutFade(game) {
+  const s = (game.sport || '').toUpperCase();
+  if (s !== 'NCAAF' && s !== 'NCAAB')
+    return { algorithm_id: 'blowout-fade-v1', algorithm_name: 'College Blowout Fade', recommended_side: 'none', confidence: 0.2, expected_value: 0, suggested_stake_units: 0, reasoning: 'Only for college football or basketball.', key_factors: [] };
+  const o = game.odds || {};
+  const spread = o.spread_home;
+  if (spread != null && Math.abs(spread) >= 17) {
+    const dog = spread <= -17 ? 'away' : 'home';
+    return { algorithm_id: 'blowout-fade-v1', algorithm_name: 'College Blowout Fade', recommended_side: dog, confidence: 0.54, expected_value: 0.03, suggested_stake_units: 0.5, reasoning: `Line is ${Math.abs(spread)} points. Big college favorites often fail to cover.`, key_factors: ['Large spread'] };
+  }
+  if ((o.ml_home ?? 0) <= -300 || (o.ml_away ?? 0) <= -300) {
+    const dog = (o.ml_home ?? 0) <= -300 ? 'away' : 'home';
+    return { algorithm_id: 'blowout-fade-v1', algorithm_name: 'College Blowout Fade', recommended_side: dog, confidence: 0.53, expected_value: 0.028, suggested_stake_units: 0.5, reasoning: 'Extreme moneyline favorite. Small lean to the underdog.', key_factors: ['Extreme ML'] };
+  }
+  return { algorithm_id: 'blowout-fade-v1', algorithm_name: 'College Blowout Fade', recommended_side: 'none', confidence: 0.3, expected_value: 0, suggested_stake_units: 0, reasoning: 'No blowout-sized line.', key_factors: [] };
 }
 
 function nflEngine(game) {
   const s = (game.sport || '').toUpperCase();
   if (s !== 'NFL' && s !== 'NCAAF') {
-    return { algorithm_id: 'nfl-engine-v1', algorithm_name: 'NFL Engine (yours)', recommended_side: 'none', confidence: 0.2, expected_value: 0, suggested_stake_units: 0, reasoning: 'This tool is built for NFL / college football only. Pick an NFL or NCAAF game.', key_factors: ['Sport gate'] };
+    return { algorithm_id: 'nfl-engine-v1', algorithm_name: 'NFL Engine', recommended_side: 'none', confidence: 0.2, expected_value: 0, suggested_stake_units: 0, reasoning: 'Built for NFL and college football only.', key_factors: ['Sport gate'] };
   }
   const o = game.odds || {};
   const books = game.books || {};
-  const mlH = o.ml_home ?? -110;
-  const mlA = o.ml_away ?? -110;
-  const hP = americanToProb(mlH);
-  const aP = americanToProb(mlA);
+  const mlH = o.ml_home ?? -110, mlA = o.ml_away ?? -110;
+  const hP = americanToProb(mlH), aP = americanToProb(mlA);
   let spreadGap = 0;
-  const fd = books.fanduel, dk = books.draftkings;
-  if (fd?.spread_home != null && dk?.spread_home != null) {
-    spreadGap = Math.abs(fd.spread_home - dk.spread_home);
-  }
-  const underdogIsAway = mlA > 0 || (mlA > mlH);
+  if (books.fanduel?.spread_home != null && books.draftkings?.spread_home != null)
+    spreadGap = Math.abs(books.fanduel.spread_home - books.draftkings.spread_home);
+  const underdogIsAway = mlA > mlH;
   const dogPrice = underdogIsAway ? mlA : mlH;
   const dogSide = underdogIsAway ? 'away' : 'home';
   const dogProb = underdogIsAway ? aP : hP;
   const priceOk = dogPrice >= 100 && dogPrice <= 220;
   const gapOk = spreadGap >= 0.5;
-  if (!priceOk && !gapOk) {
-    return { algorithm_id: 'nfl-engine-v1', algorithm_name: 'NFL Engine (yours)', recommended_side: 'none', confidence: 0.32, expected_value: 0, suggested_stake_units: 0, reasoning: 'Evidence gate: no clear book disagreement and no mid-range underdog price. Pass (same idea as your engine needing real evidence).', key_factors: ['Evidence gate', 'Price range', 'Book agreement'] };
-  }
+  if (!priceOk && !gapOk)
+    return { algorithm_id: 'nfl-engine-v1', algorithm_name: 'NFL Engine', recommended_side: 'none', confidence: 0.32, expected_value: 0, suggested_stake_units: 0, reasoning: 'No clear book disagreement and no mid-range underdog price. Pass.', key_factors: ['Evidence gate'] };
   const modelDog = dogProb + 0.04 + (gapOk ? 0.02 : 0);
   const edge = modelDog - dogProb;
-  if (edge < 0.02) {
-    return { algorithm_id: 'nfl-engine-v1', algorithm_name: 'NFL Engine (yours)', recommended_side: 'none', confidence: 0.4, expected_value: edge, suggested_stake_units: 0, reasoning: 'Gates passed but edge is too small after calibration check. Pass.', key_factors: ['Calibration', 'Edge size'] };
-  }
-  return { algorithm_id: 'nfl-engine-v1', algorithm_name: 'NFL Engine (yours)', recommended_side: dogSide, confidence: Math.min(0.78, 0.5 + edge * 3), expected_value: edge, suggested_stake_units: edge > 0.05 ? 1.25 : 0.75, reasoning: `NFL-style evidence path: ${gapOk ? `books disagree on spread by ${spreadGap} pts. ` : ''}${priceOk ? `Underdog price ${dogPrice > 0 ? '+' : ''}${dogPrice} is in the mid range. ` : ''}Leans ${dogSide} with ~${(edge * 100).toFixed(1)}% edge. (Simplified port of your evidence-gated NFL engine — full EPA/trenches need play-level data.)`, key_factors: [gapOk ? `Book spread gap ${spreadGap}` : 'Price gate', `Dog ${dogSide} @ ${dogPrice > 0 ? '+' : ''}${dogPrice}`, s] };
+  if (edge < 0.02)
+    return { algorithm_id: 'nfl-engine-v1', algorithm_name: 'NFL Engine', recommended_side: 'none', confidence: 0.4, expected_value: edge, suggested_stake_units: 0, reasoning: 'Gates passed but edge is too small. Pass.', key_factors: ['Calibration'] };
+  return { algorithm_id: 'nfl-engine-v1', algorithm_name: 'NFL Engine', recommended_side: dogSide, confidence: Math.min(0.78, 0.5 + edge * 3), expected_value: edge, suggested_stake_units: edge > 0.05 ? 1.25 : 0.75, reasoning: `Evidence path: ${gapOk ? `books disagree on spread by ${spreadGap} pts. ` : ''}${priceOk ? `Underdog at ${dogPrice > 0 ? '+' : ''}${dogPrice}. ` : ''}Leans ${dogSide}.`, key_factors: [gapOk ? `Spread gap ${spreadGap}` : 'Price gate', s] };
 }
 
 function ncaaEngine(game) {
   const s = (game.sport || '').toUpperCase();
   if (s !== 'NCAAF' && s !== 'NCAAB') {
-    return { algorithm_id: 'ncaa-engine-v1', algorithm_name: 'NCAA Engine (yours)', recommended_side: 'none', confidence: 0.2, expected_value: 0, suggested_stake_units: 0, reasoning: 'This tool is for college football (NCAAF) or college basketball (NCAAB) only.', key_factors: ['Sport gate'] };
+    return { algorithm_id: 'ncaa-engine-v1', algorithm_name: 'NCAA Engine', recommended_side: 'none', confidence: 0.2, expected_value: 0, suggested_stake_units: 0, reasoning: 'For college football or basketball only.', key_factors: ['Sport gate'] };
   }
   const o = game.odds || {};
   const books = game.books || {};
-  const mlH = o.ml_home ?? -110;
-  const mlA = o.ml_away ?? -110;
+  const mlH = o.ml_home ?? -110, mlA = o.ml_away ?? -110;
   const spread = o.spread_home;
-  const extremeFav = (mlH <= -300) || (mlA <= -300) || (spread != null && Math.abs(spread) >= 17);
-  if (extremeFav) {
+  if ((mlH <= -300) || (mlA <= -300) || (spread != null && Math.abs(spread) >= 17)) {
     const dogSide = (mlH <= -300 || (spread != null && spread <= -17)) ? 'away' : 'home';
-    return { algorithm_id: 'ncaa-engine-v1', algorithm_name: 'NCAA Engine (yours)', recommended_side: dogSide, confidence: 0.54, expected_value: 0.03, suggested_stake_units: 0.5, reasoning: 'College market often overprices huge favorites. Evidence-style pass on mega-faves; small lean to dog (your NCAA engine avoids weak evidence on blowout lines).', key_factors: ['Extreme line gate', 'College variance'] };
+    return { algorithm_id: 'ncaa-engine-v1', algorithm_name: 'NCAA Engine', recommended_side: dogSide, confidence: 0.54, expected_value: 0.03, suggested_stake_units: 0.5, reasoning: 'College market often overprices huge favorites. Small lean to dog.', key_factors: ['Extreme line'] };
   }
   let spreadGap = 0;
-  if (books.fanduel?.spread_home != null && books.draftkings?.spread_home != null) {
+  if (books.fanduel?.spread_home != null && books.draftkings?.spread_home != null)
     spreadGap = Math.abs(books.fanduel.spread_home - books.draftkings.spread_home);
-  }
   const underdogIsAway = mlA > mlH;
   const dogSide = underdogIsAway ? 'away' : 'home';
   const dogPrice = underdogIsAway ? mlA : mlH;
-  if (spreadGap < 0.5 && !(dogPrice >= 105 && dogPrice <= 180)) {
-    return { algorithm_id: 'ncaa-engine-v1', algorithm_name: 'NCAA Engine (yours)', recommended_side: 'none', confidence: 0.3, expected_value: 0, suggested_stake_units: 0, reasoning: 'NCAA evidence gate: books agree and no mid-range dog price. Pass until stronger signal (same spirit as your FBS evidence requirements).', key_factors: ['Evidence gate', 'Book agreement'] };
-  }
+  if (spreadGap < 0.5 && !(dogPrice >= 105 && dogPrice <= 180))
+    return { algorithm_id: 'ncaa-engine-v1', algorithm_name: 'NCAA Engine', recommended_side: 'none', confidence: 0.3, expected_value: 0, suggested_stake_units: 0, reasoning: 'Books agree and no mid-range dog price. Pass.', key_factors: ['Evidence gate'] };
   const edge = 0.035 + (spreadGap >= 1 ? 0.02 : 0);
-  return { algorithm_id: 'ncaa-engine-v1', algorithm_name: 'NCAA Engine (yours)', recommended_side: dogSide, confidence: Math.min(0.72, 0.48 + edge * 2.5), expected_value: edge, suggested_stake_units: 0.75, reasoning: `College evidence path: ${spreadGap >= 0.5 ? `FanDuel vs DraftKings spread gap ${spreadGap}. ` : ''}Leans ${dogSide} underdog. (Simplified port of your NCAA engine — full opponent-adjusted metrics need team stats feeds.)`, key_factors: [s, `Dog ${dogSide}`, spreadGap >= 0.5 ? `Spread gap ${spreadGap}` : 'Price band'] };
+  return { algorithm_id: 'ncaa-engine-v1', algorithm_name: 'NCAA Engine', recommended_side: dogSide, confidence: Math.min(0.72, 0.48 + edge * 2.5), expected_value: edge, suggested_stake_units: 0.75, reasoning: `College evidence: ${spreadGap >= 0.5 ? `spread gap ${spreadGap}. ` : ''}Leans ${dogSide} underdog.`, key_factors: [s, spreadGap >= 0.5 ? `Gap ${spreadGap}` : 'Price band'] };
 }
 
 const ALGOS = {
-  'nfl-engine-v1': { id: 'nfl-engine-v1', name: 'NFL Engine (yours)', description: 'Based on your NFL evidence-gated engine. Only runs on NFL/NCAAF. Needs a clear price or book disagreement before it picks.', created_by: 'user', tags: ['nfl', 'evidence', 'your-engine'], evaluate: nflEngine },
-  'ncaa-engine-v1': { id: 'ncaa-engine-v1', name: 'NCAA Engine (yours)', description: 'Based on your NCAA evidence-gated engine. College football & basketball only. Passes when evidence is weak.', created_by: 'user', tags: ['ncaa', 'college', 'your-engine'], evaluate: ncaaEngine },
-  'underdog-value-v1': { id: 'underdog-value-v1', name: 'Underdog Value Hunter', description: 'Looks for sides with positive edge after the sportsbook juice.', created_by: 'system', tags: ['moneyline', 'value'], evaluate: underdog },
-  'home-advantage-v1': { id: 'home-advantage-v1', name: 'Home Court Edge', description: 'Favors home when the market may underprice home field/court.', created_by: 'system', tags: ['home'], evaluate: homeAdv },
-  'contrarian-public-v1': { id: 'contrarian-public-v1', name: 'Contrarian Public Fade', description: 'Fades heavy favorites the public usually piles onto (−200 or worse).', created_by: 'system', tags: ['contrarian'], evaluate: contrarian },
+  'nfl-engine-v1': { id: 'nfl-engine-v1', name: 'NFL Engine', description: 'Your evidence-style football tool. Needs a clear price or book disagreement before it picks.', created_by: 'user', tags: ['nfl', 'evidence'], evaluate: nflEngine },
+  'ncaa-engine-v1': { id: 'ncaa-engine-v1', name: 'NCAA Engine', description: 'Your college tool for football and basketball. Passes when evidence is weak.', created_by: 'user', tags: ['ncaa'], evaluate: ncaaEngine },
+  'soft-line-v1': { id: 'soft-line-v1', name: 'Soft Line', description: 'Compares FanDuel vs DraftKings. Picks the softer number when books disagree.', created_by: 'system', tags: ['arbitrage-style'], evaluate: softLine },
+  'home-dog-v1': { id: 'home-dog-v1', name: 'Home Underdog', description: 'Home dogs priced +100 to +180.', created_by: 'system', tags: ['preset'], evaluate: homeDog },
+  'blowout-fade-v1': { id: 'blowout-fade-v1', name: 'College Blowout Fade', description: 'Fades huge college favorites (−17 or worse / −300 ML).', created_by: 'system', tags: ['college', 'preset'], evaluate: blowoutFade },
+  'underdog-value-v1': { id: 'underdog-value-v1', name: 'Underdog Value', description: 'Looks for sides with positive edge after the sportsbook take.', created_by: 'system', tags: ['value'], evaluate: underdog },
+  'home-advantage-v1': { id: 'home-advantage-v1', name: 'Home Edge', description: 'Favors home when the market may underprice home field or court.', created_by: 'system', tags: ['home'], evaluate: homeAdv },
+  'contrarian-public-v1': { id: 'contrarian-public-v1', name: 'Fade Heavy Favorite', description: 'Fades favorites at −200 or worse.', created_by: 'system', tags: ['contrarian'], evaluate: contrarian },
 };
 
 export default async function handler(req, res) {
@@ -114,7 +150,7 @@ export default async function handler(req, res) {
   if (req.method === 'POST') {
     const { algorithm_id, game } = req.body || {};
     const algo = ALGOS[algorithm_id];
-    if (!algo) return res.status(404).json({ error: 'Algorithm not found' });
+    if (!algo) return res.status(404).json({ error: 'Tool not found' });
     const result = algo.evaluate(game || {});
     result.timestamp = new Date().toISOString();
     result.game_id = game?.id;

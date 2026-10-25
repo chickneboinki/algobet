@@ -54,16 +54,17 @@ export default function App() {
               to={t.to}
               end={t.to === '/'}
               className={({ isActive }) =>
-                `flex flex-col items-center gap-1 text-[10px] font-medium transition ${
+                `flex flex-col items-center gap-1.5 text-[10px] font-medium transition ${
                   isActive ? 'text-sky-400' : 'text-zinc-500'
                 }`
               }
             >
-              <span
-                className={`w-1.5 h-1.5 rounded-full ${t.to === '/' ? '' : 'opacity-0'} bg-sky-400`}
-                style={{ opacity: undefined }}
-              />
-              <span>{t.label}</span>
+              {({ isActive }) => (
+                <>
+                  <span className={`w-1.5 h-1.5 rounded-full ${isActive ? 'bg-sky-400' : 'bg-transparent'}`} />
+                  <span>{t.label}</span>
+                </>
+              )}
             </NavLink>
           ))}
         </div>
