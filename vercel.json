@@ -2,6 +2,12 @@
   "buildCommand": "npm run build",
   "outputDirectory": "dist",
   "framework": "vite",
+  "functions": {
+    "api/notify.js": { "maxDuration": 60 },
+    "api/best-bets.js": { "maxDuration": 60 },
+    "api/games.js": { "maxDuration": 30 },
+    "api/cron.js": { "maxDuration": 60 }
+  },
   "rewrites": [
     { "source": "/api/health", "destination": "/api/cron?route=health" },
     { "source": "/api/(.*)", "destination": "/api/$1" },
