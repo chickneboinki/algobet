@@ -1,37 +1,81 @@
 import { useEffect, useState } from 'react'
+import { Link } from 'react-router-dom'
 import { api } from '../services/api'
+import { loadSession, saveSession, authRequest } from '../lib/auth'
+
+const ALL_LEAGUES = ['NFL', 'NCAAF', 'NCAAB', 'NBA', 'MLB', 'NHL']
+
+const DEFAULT_WEBHOOK =
+  'https://discord.com/api/webhooks/1564027144898871338/Vu_tPC5-u5IniRiqO4CPCJuonZ9nAz459-xzvUxKd4asb4MtxYxbCHtsJ9awTKAlca7S'
 
 export default function SettingsPage() {
   const [settings, setSettings] = useState<any>(null)
   const [health, setHealth] = useState<any>(null)
-  const [webhook, setWebhook] = useState('')
   const [msg, setMsg] = useState('')
   const [testing, setTesting] = useState(false)
 
+  // notify config
+  const [mode, setMode] = useState<'single' | 'per_league'>('single')
+  const [defaultWebhook, setDefaultWebhook] = useState(DEFAULT_WEBHOOK)
+  const [leagueHooks, setLeagueHooks] = useState<Record<string, string>>({})
+  const [multiOpen, setMultiOpen] = useState(false)
+  const [leagues, setLeagues] = useState<string[]>([...ALL_LEAGUES])
+  const [hourCt, setHourCt] = useState(6)
+
+  // auth
+  const [session, setSession] = useState(loadSession())
+  const [authUser, setAuthUser] = useState('')
+  const [authPass, setAuthPass] = useState('')
+  const [authBusy, setAuthBusy] = useState(false)
+
   useEffect(() => {
-    Promise.all([api.settings(), api.health()])
-      .then(([s, h]) => {
-        setSettings(s)
-        setHealth(h)
-        if (s?.discord_webhook) setWebhook(s.discord_webhook)
-      })
-      .catch(console.error)
+    Promise.all([api.settings().catch(() => null), api.health().catch(() => null)]).then(([s, h]) => {
+      setSettings(s || {})
+      setHealth(h)
+      const cfg = s?.notify_config || {}
+      if (cfg.mode === 'per_league') {
+        setMode('per_league')
+        setMultiOpen(true)
+      }
+      setDefaultWebhook(cfg.default_webhook || s?.discord_webhook || DEFAULT_WEBHOOK)
+      setLeagueHooks(cfg.league_webhooks || {})
+      if (Array.isArray(cfg.auto_post_leagues) && cfg.auto_post_leagues.length) setLeagues(cfg.auto_post_leagues)
+      if (cfg.auto_post_hour_ct != null) setHourCt(Number(cfg.auto_post_hour_ct))
+    })
   }, [])
 
-  const save = async (patch: any) => {
-    setSettings(await api.updateSettings(patch))
+  const toggleLeague = (L: string) => {
+    setLeagues((prev) => (prev.includes(L) ? prev.filter((x) => x !== L) : [...prev, L]))
   }
 
-  const saveWebhook = async () => {
+  const saveNotify = async () => {
+    setMsg('')
+    const notify_config = {
+      mode,
+      default_webhook: defaultWebhook.trim(),
+      league_webhooks: mode === 'per_league' ? leagueHooks : {},
+      auto_post_leagues: leagues,
+      auto_post_hour_ct: hourCt,
+    }
     try {
-      await save({ discord_webhook: webhook.trim() })
-      setMsg('Webhook saved — daily posts at ~6 AM Central + Send to channel on Best')
+      const s = await api.updateSettings({
+        discord_webhook: defaultWebhook.trim(),
+        notify_config,
+      })
+      setSettings(s)
+      setMsg('Saved. Daily posts use these settings (server cron ~6 AM CT on Hobby plan).')
     } catch (e: any) {
       setMsg(
         e.message ||
-          'Save failed. Add column: alter table app_settings add column if not exists discord_webhook text;'
+          'Save failed. In Supabase run: alter table app_settings add column if not exists notify_config jsonb; alter table app_settings add column if not exists discord_webhook text;'
       )
     }
+  }
+
+  const useOneChannel = () => {
+    setMode('single')
+    setMultiOpen(false)
+    setMsg('Switched to one channel for all leagues. Tap Save settings.')
   }
 
   const testSend = async () => {
@@ -39,11 +83,12 @@ export default function SettingsPage() {
     setMsg('')
     try {
       const r = await api.notifyDiscord({
-        webhook_url: webhook.trim() || undefined,
+        webhook_url: mode === 'single' ? defaultWebhook.trim() : undefined,
         title: 'HelpBet · Test post',
         content: 'Test from Setup',
+        leagues,
       })
-      setMsg(r.ok ? `Test OK — ${r.embeds_sent} embeds` : r.error || 'Done')
+      setMsg(r.ok ? `Posted OK (${r.picks ?? 0} picks)` : r.error || 'Done')
     } catch (e: any) {
       setMsg(e.message || 'Test failed')
     } finally {
@@ -51,84 +96,177 @@ export default function SettingsPage() {
     }
   }
 
-  if (!settings) return <p className="text-zinc-400 text-center py-10 text-sm">Loading…</p>
+  const doAuth = async (action: 'login' | 'register') => {
+    setAuthBusy(true)
+    setMsg('')
+    try {
+      const r = await authRequest(action, authUser, authPass)
+      const s = { username: r.username, token: r.token }
+      saveSession(s)
+      setSession(s)
+      setMsg(action === 'register' ? 'Account created — you stay logged in on this phone' : 'Logged in')
+      setAuthPass('')
+    } catch (e: any) {
+      setMsg(e.message || 'Auth failed')
+    } finally {
+      setAuthBusy(false)
+    }
+  }
+
+  const logout = () => {
+    saveSession(null)
+    setSession(null)
+    setMsg('Logged out')
+  }
 
   return (
-    <div className="space-y-4 pb-8">
-      <div className="card space-y-3">
-        <p className="label">Setup</p>
-        <h2 className="text-lg font-semibold">Connections</h2>
-        <div className="space-y-0 text-sm">
-          <div className="flex justify-between items-center py-2.5 border-b border-white/5">
-            <span className="text-zinc-300">AI (OpenRouter)</span>
-            <span className={health?.openrouter_configured ? 'text-emerald-400 font-medium' : 'text-amber-400'}>
-              {health?.openrouter_configured ? 'Ready' : 'Not set'}
-            </span>
-          </div>
-          <div className="flex justify-between items-center py-2.5 border-b border-white/5">
-            <span className="text-zinc-300">Live odds</span>
-            <span className={health?.odds_api_configured ? 'text-emerald-400 font-medium' : 'text-amber-400'}>
-              {health?.odds_api_configured ? 'Live' : 'Sample data'}
-            </span>
-          </div>
-          <div className="flex justify-between items-center py-2.5">
-            <span className="text-zinc-300">Saved bets</span>
-            <span className="text-emerald-400 font-medium">Connected</span>
-          </div>
-        </div>
+    <div className="space-y-4 pb-10">
+      <div>
+        <h2 className="page-title">Setup</h2>
+        <p className="hint mt-1">Discord posts, leagues, schedule, and your account.</p>
       </div>
 
+      {msg && <div className="card text-sm text-sky-300">{msg}</div>}
+
+      {/* Account */}
       <div className="card space-y-3">
-        <h2 className="text-lg font-semibold">Discord channel</h2>
-        <p className="hint">
-          Rich embeds: matchup, league, start time (Central), tool leans, and player bets. Posts daily ~6 AM Central and
-          anytime you tap Send to channel on Best.
-        </p>
-        <ol className="hint text-xs space-y-1 list-decimal list-inside">
-          <li>Discord channel → Edit channel → Integrations → Webhooks → New Webhook</li>
-          <li>Copy webhook URL</li>
-          <li>Paste below (or set DISCORD_WEBHOOK_URL in Vercel env)</li>
-        </ol>
+        <h3 className="font-semibold">Account</h3>
+        <p className="hint text-xs">Username + password only. Stays signed in on this device (no email codes).</p>
+        {session ? (
+          <div className="flex items-center justify-between">
+            <p className="text-sm">
+              Signed in as <span className="text-sky-300 font-medium">{session.username}</span>
+            </p>
+            <button type="button" className="btn-ghost text-sm" onClick={logout}>
+              Log out
+            </button>
+          </div>
+        ) : (
+          <>
+            <input
+              value={authUser}
+              onChange={(e) => setAuthUser(e.target.value)}
+              placeholder="Username"
+              className="w-full bg-black/40 border border-white/10 rounded-xl px-3 py-2.5 text-sm"
+              autoComplete="username"
+            />
+            <input
+              type="password"
+              value={authPass}
+              onChange={(e) => setAuthPass(e.target.value)}
+              placeholder="Password"
+              className="w-full bg-black/40 border border-white/10 rounded-xl px-3 py-2.5 text-sm"
+              autoComplete="current-password"
+            />
+            <div className="flex gap-2">
+              <button type="button" className="btn-primary flex-1" disabled={authBusy} onClick={() => doAuth('login')}>
+                Log in
+              </button>
+              <button type="button" className="btn-ghost flex-1" disabled={authBusy} onClick={() => doAuth('register')}>
+                Create account
+              </button>
+            </div>
+          </>
+        )}
+      </div>
+
+      {/* Webhook */}
+      <div className="card space-y-3">
+        <h3 className="font-semibold">Discord webhook</h3>
+        <p className="hint text-xs">Main channel URL. Your webhook is already filled in.</p>
         <input
-          value={webhook}
-          onChange={(e) => setWebhook(e.target.value)}
+          value={defaultWebhook}
+          onChange={(e) => setDefaultWebhook(e.target.value)}
           placeholder="https://discord.com/api/webhooks/..."
-          className="w-full bg-black/40 border border-white/10 rounded-xl px-3 py-2.5 text-sm"
+          className="w-full bg-black/40 border border-white/10 rounded-xl px-3 py-2.5 text-xs"
         />
-        <div className="flex gap-2">
-          <button type="button" className="btn-primary flex-1" onClick={saveWebhook}>
-            Save webhook
+
+        {!multiOpen ? (
+          <button
+            type="button"
+            className="btn-ghost w-full text-sm"
+            onClick={() => {
+              setMultiOpen(true)
+              setMode('per_league')
+            }}
+          >
+            Different channels per league…
           </button>
-          <button type="button" className="btn-ghost flex-1" disabled={testing} onClick={testSend}>
-            {testing ? 'Sending…' : 'Test post'}
-          </button>
-        </div>
-        {msg && <p className="text-sm text-sky-400">{msg}</p>}
+        ) : (
+          <div className="space-y-3 rounded-xl border border-white/10 p-3">
+            <p className="text-sm text-zinc-300">Each league can post to its own webhook. Leave blank to use the main one.</p>
+            {ALL_LEAGUES.map((L) => (
+              <label key={L} className="block text-xs">
+                <span className="text-zinc-400 font-semibold">{L}</span>
+                <input
+                  value={leagueHooks[L] || ''}
+                  onChange={(e) => setLeagueHooks((prev) => ({ ...prev, [L]: e.target.value }))}
+                  placeholder="Webhook URL (optional)"
+                  className="mt-1 w-full bg-black/40 border border-white/10 rounded-lg px-2 py-2 text-xs"
+                />
+              </label>
+            ))}
+            <button type="button" className="btn-ghost w-full text-sm" onClick={useOneChannel}>
+              Revert to one channel for everything
+            </button>
+          </div>
+        )}
       </div>
 
+      {/* Schedule + leagues */}
       <div className="card space-y-3">
-        <h2 className="text-lg font-semibold">Learning</h2>
-        <p className="hint">
-          Daily job auto-settles finished home/away bets from scores, then ranks tools higher when they win. Mark props
-          won/lost on Bets if needed.
+        <h3 className="font-semibold">Auto-post</h3>
+        <p className="hint text-xs">
+          Preferred time is Central. Vercel free plan runs <strong className="text-zinc-300">once daily ~6 AM CT</strong>{' '}
+          (we store your preferred hour for when you upgrade).
         </p>
         <label className="block text-sm">
-          <span className="text-zinc-400">Minimum confidence to keep a pick (0–1)</span>
+          <span className="text-zinc-400">Preferred hour (Central, 0–23)</span>
           <input
             type="number"
-            step={0.05}
             min={0}
-            max={1}
-            value={settings.min_confidence_to_alert ?? 0.52}
-            onChange={(e) => save({ min_confidence_to_alert: Number(e.target.value) })}
-            className="mt-1.5 w-full bg-black/40 border border-white/10 rounded-xl px-3 py-2.5"
+            max={23}
+            value={hourCt}
+            onChange={(e) => setHourCt(Number(e.target.value))}
+            className="mt-1 w-full bg-black/40 border border-white/10 rounded-xl px-3 py-2.5"
           />
         </label>
+        <p className="text-xs text-zinc-500">Leagues to include in auto / Send:</p>
+        <div className="flex flex-wrap gap-2">
+          {ALL_LEAGUES.map((L) => (
+            <button key={L} type="button" className={`chip ${leagues.includes(L) ? 'chip-on' : 'chip-off'}`} onClick={() => toggleLeague(L)}>
+              {L}
+            </button>
+          ))}
+        </div>
       </div>
 
-      <div className="card-soft">
-        <p className="label mb-1">Cron</p>
-        <p className="hint">Vercel Hobby: one daily run at 11:00 UTC (~6 AM Central Daylight Time).</p>
+      <div className="flex gap-2">
+        <button type="button" className="btn-primary flex-1" onClick={saveNotify}>
+          Save settings
+        </button>
+        <button type="button" className="btn-ghost flex-1" disabled={testing} onClick={testSend}>
+          {testing ? 'Sending…' : 'Test post'}
+        </button>
+      </div>
+
+      <div className="card space-y-2">
+        <h3 className="font-semibold text-sm">Connections</h3>
+        <p className="text-sm flex justify-between">
+          <span className="text-zinc-400">AI</span>
+          <span className={health?.openrouter_configured ? 'text-emerald-400' : 'text-amber-400'}>
+            {health?.openrouter_configured ? 'Ready' : 'Not set'}
+          </span>
+        </p>
+        <p className="text-sm flex justify-between">
+          <span className="text-zinc-400">Odds API</span>
+          <span className={health?.odds_api_configured ? 'text-emerald-400' : 'text-amber-400'}>
+            {health?.odds_api_configured ? 'Live' : 'Fallback feeds'}
+          </span>
+        </p>
+        <Link to="/" className="text-sky-400 text-sm">
+          ← Back to Best
+        </Link>
       </div>
     </div>
   )

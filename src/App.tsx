@@ -1,4 +1,4 @@
-import { Routes, Route, NavLink } from 'react-router-dom'
+import { Routes, Route, NavLink, Link } from 'react-router-dom'
 import BestBetsPage from './pages/BestBetsPage'
 import GamesPage from './pages/GamesPage'
 import AlgorithmsPage from './pages/AlgorithmsPage'
@@ -6,6 +6,8 @@ import AILabPage from './pages/AILabPage'
 import HistoryPage from './pages/HistoryPage'
 import WatchPage from './pages/WatchPage'
 import SettingsPage from './pages/SettingsPage'
+import { loadSession } from './lib/auth'
+import { useEffect, useState } from 'react'
 
 const stroke = {
   fill: 'none',
@@ -46,28 +48,44 @@ const icons: Record<string, JSX.Element> = {
       <path d="M8 6h12M8 12h12M8 18h12M4 6h.01M4 12h.01M4 18h.01" />
     </svg>
   ),
+  Setup: (
+    <svg {...stroke}>
+      <circle cx="12" cy="12" r="3" />
+      <path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4" />
+    </svg>
+  ),
 }
 
 const tabs = [
   { to: '/', label: 'Best' },
   { to: '/games', label: 'Games' },
   { to: '/tools', label: 'Tools' },
-  { to: '/ai', label: 'AI' },
   { to: '/bets', label: 'Bets' },
+  { to: '/setup', label: 'Setup' },
 ]
 
 export default function App() {
+  const [user, setUser] = useState<string | null>(null)
+  useEffect(() => {
+    setUser(loadSession()?.username || null)
+  }, [])
+
   return (
     <div className="shell flex flex-col">
       <header className="app-header">
-        <div className="flex items-center gap-3">
-          <div className="w-8 h-8 rounded-[10px] bg-[var(--accent)] flex items-center justify-center text-[13px] font-bold text-[#06121f]">
-            H
+        <div className="flex items-center justify-between gap-3">
+          <div className="flex items-center gap-3">
+            <div className="w-8 h-8 rounded-[10px] bg-[var(--accent)] flex items-center justify-center text-[13px] font-bold text-[#06121f]">
+              H
+            </div>
+            <div>
+              <h1 className="text-[16px] font-semibold tracking-tight leading-tight">HelpBet</h1>
+              <p className="text-[11px] text-zinc-500 leading-none mt-0.5">Find value. Track results.</p>
+            </div>
           </div>
-          <div>
-            <h1 className="text-[16px] font-semibold tracking-tight leading-tight">HelpBet</h1>
-            <p className="text-[11px] text-zinc-500 leading-none mt-0.5">Find value. Track results.</p>
-          </div>
+          <Link to="/setup" className="text-[11px] text-sky-400">
+            {user ? user : 'Account'}
+          </Link>
         </div>
       </header>
 

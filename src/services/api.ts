@@ -24,7 +24,7 @@ export const api = {
     return req<any>(`/best-bets${s ? `?${s}` : ''}`)
   },
   autoSettle: () => req<any>('/settle', { method: 'POST', body: '{}' }),
-  notifyDiscord: (opts?: { webhook_url?: string; title?: string; content?: string }) =>
+  notifyDiscord: (opts?: { webhook_url?: string; title?: string; content?: string; leagues?: string[] }) =>
     req<any>('/notify', { method: 'POST', body: JSON.stringify(opts || {}) }),
   teamStats: (team: string, sport = 'NBA') =>
     req<any>(`/stats?team=${encodeURIComponent(team)}&sport=${encodeURIComponent(sport)}`),
@@ -52,14 +52,8 @@ export const api = {
     return data || []
   },
   async trackBet(body: any) {
-    // Schema-safe insert: never require optional columns like `side`
-    const pick = (keys: string[]) => {
-      const row: Record<string, any> = {}
-      for (const k of keys) if (body[k] !== undefined && body[k] !== null) row[k] = body[k]
-      return row
-    }
-    // Prefer recommended_side only (side column may not exist)
-    const primary = pick([
+    const primary: Record<string, any> = {}
+    for (const k of [
       'game_id',
       'sport',
       'home_team',
@@ -75,14 +69,15 @@ export const api = {
       'placed_at',
       'status',
       'profit_units',
-    ])
+    ]) {
+      if (body[k] !== undefined && body[k] !== null) primary[k] = body[k]
+    }
     if (!primary.recommended_side && body.side) primary.recommended_side = body.side
     if (!primary.status) primary.status = 'pending'
     if (!primary.placed_at) primary.placed_at = new Date().toISOString()
     if (primary.stake_units == null) primary.stake_units = 1
 
     let { data, error } = await supabase.from('bets').insert(primary).select().single()
-    // Retry with minimal columns if schema cache rejects extras
     if (error && /column|schema cache/i.test(error.message || '')) {
       const minimal = {
         game_id: primary.game_id,
@@ -95,8 +90,6 @@ export const api = {
         status: primary.status || 'pending',
         placed_at: primary.placed_at,
         stake_units: primary.stake_units ?? 1,
-        confidence: primary.confidence,
-        expected_value: primary.expected_value,
       }
       const retry = await supabase.from('bets').insert(minimal).select().single()
       data = retry.data
@@ -144,31 +137,19 @@ export const api = {
     if (error) throw error
     return data || []
   },
-
   async listCustomTools() {
     const { data, error } = await supabase.from('custom_tools').select('*').order('created_at', { ascending: false })
     if (error) throw error
     return data || []
   },
-  async saveCustomTool(tool: {
-    name: string
-    description?: string
-    sports?: string[]
-    prompt?: string
-    suggested_code?: string
-    explanation?: string
-    key_features?: string[]
-  }) {
+  async saveCustomTool(tool: any) {
     const row = {
       name: tool.name,
       description: tool.description || tool.explanation || '',
       sports: tool.sports || [],
       prompt: tool.prompt || '',
       suggested_code: tool.suggested_code || '',
-      meta: {
-        explanation: tool.explanation,
-        key_features: tool.key_features || [],
-      },
+      meta: { explanation: tool.explanation, key_features: tool.key_features || [] },
       created_at: new Date().toISOString(),
     }
     const { data, error } = await supabase.from('custom_tools').insert(row).select().single()
