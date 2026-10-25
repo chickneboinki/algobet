@@ -15,6 +15,16 @@ export const api = {
   algorithms: () => req<any[]>('/algorithms'),
   runAlgo: (algorithm_id: string, game: any) =>
     req<any>('/algorithms', { method: 'POST', body: JSON.stringify({ algorithm_id, game }) }),
+  bestBets: (opts?: { min_confidence?: number; limit?: number; persist?: boolean }) => {
+    const q = new URLSearchParams()
+    if (opts?.min_confidence != null) q.set('min_confidence', String(opts.min_confidence))
+    if (opts?.limit != null) q.set('limit', String(opts.limit))
+    if (opts?.persist) q.set('persist', '1')
+    const s = q.toString()
+    return req<any>(`/best-bets${s ? `?${s}` : ''}`)
+  },
+  teamStats: (team: string, sport = 'NBA') =>
+    req<any>(`/stats?team=${encodeURIComponent(team)}&sport=${encodeURIComponent(sport)}`),
   generate: (prompt: string, sports: string[] = []) =>
     req<any>('/ai', { method: 'POST', body: JSON.stringify({ action: 'generate', prompt, sports }) }),
   analyze: (summary: string) =>
@@ -45,7 +55,12 @@ export const api = {
     return data
   },
   async updateSettings(patch: any) {
-    const { data, error } = await supabase.from('app_settings').update({ ...patch, updated_at: new Date().toISOString() }).eq('id', 'default').select().single()
+    const { data, error } = await supabase
+      .from('app_settings')
+      .update({ ...patch, updated_at: new Date().toISOString() })
+      .eq('id', 'default')
+      .select()
+      .single()
     if (error) throw error
     return data
   },
@@ -58,5 +73,10 @@ export const api = {
     const { data, error } = await supabase.from('watch_log').insert(entry).select().single()
     if (error) throw error
     return data
+  },
+  async savedBestBets() {
+    const { data, error } = await supabase.from('best_bets').select('*').order('score', { ascending: false }).limit(30)
+    if (error) throw error
+    return data || []
   },
 }
