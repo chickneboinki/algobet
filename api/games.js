@@ -1,6 +1,7 @@
 /**
  * Live games: FanDuel sbapi + ESPN DraftKings.
  * sport=ALL pulls every major league.
+ * Past tip-offs hidden unless include_past=1.
  */
 
 const SPORT_PATHS = {
@@ -91,8 +92,8 @@ function normalizeGame(g) {
     bets,
     odds: books.fanduel || books.draftkings || Object.values(books)[0] || null,
     links: {
-      fanduel: `https://sportsbook.fanduel.com/navigation/nfl?search=${q}`,
-      draftkings: `https://sportsbook.draftkings.com/sportsbook?search=${q}`,
+      fanduel: `https://sportsbook.fanduel.com/search?q=${q}`,
+      draftkings: `https://sportsbook.draftkings.com/search?q=${q}`,
       prizepicks: 'https://app.prizepicks.com/',
     },
   };
@@ -287,8 +288,21 @@ export default async function handler(req, res) {
   if (req.method === 'OPTIONS') return res.status(200).end();
 
   const sport = (req.query.sport || 'NFL').toUpperCase();
-  const { games, note } =
+  const includePast = req.query.include_past === '1';
+  let { games, note } =
     sport === 'ALL' || sport === 'ALL_SPORTS' ? await getAllGames() : await getGames(sport);
+
+  if (!includePast) {
+    const cutoff = Date.now() - 2 * 60e3;
+    games = games.filter((g) => {
+      const iso = g.start_time || g.commence_time;
+      if (!iso) return true;
+      const t = new Date(iso).getTime();
+      if (!Number.isFinite(t)) return true;
+      if (g.live) return true;
+      return t > cutoff;
+    });
+  }
 
   return res.status(200).json({
     source: 'fanduel+draftkings',
