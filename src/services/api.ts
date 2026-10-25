@@ -23,6 +23,7 @@ export const api = {
     const s = q.toString()
     return req<any>(`/best-bets${s ? `?${s}` : ''}`)
   },
+  autoSettle: () => req<any>('/settle', { method: 'POST', body: '{}' }),
   teamStats: (team: string, sport = 'NBA') =>
     req<any>(`/stats?team=${encodeURIComponent(team)}&sport=${encodeURIComponent(sport)}`),
   playerProps: (opts: { sport: string; eventId?: string; home?: string; away?: string }) => {
@@ -93,7 +94,6 @@ export const api = {
     return data || []
   },
 
-  /** Custom AI tools stored in Supabase */
   async listCustomTools() {
     const { data, error } = await supabase.from('custom_tools').select('*').order('created_at', { ascending: false })
     if (error) throw error
