@@ -24,6 +24,8 @@ export const api = {
     return req<any>(`/best-bets${s ? `?${s}` : ''}`)
   },
   autoSettle: () => req<any>('/settle', { method: 'POST', body: '{}' }),
+  notifyDiscord: (opts?: { webhook_url?: string; title?: string; content?: string }) =>
+    req<any>('/notify', { method: 'POST', body: JSON.stringify(opts || {}) }),
   teamStats: (team: string, sport = 'NBA') =>
     req<any>(`/stats?team=${encodeURIComponent(team)}&sport=${encodeURIComponent(sport)}`),
   playerProps: (opts: { sport: string; eventId?: string; home?: string; away?: string }) => {
@@ -50,16 +52,56 @@ export const api = {
     return data || []
   },
   async trackBet(body: any) {
-    // Only send columns that exist on the bets table so extra fields never break the insert
-    const cols = [
-      'game_id', 'sport', 'home_team', 'away_team', 'algorithm_id', 'algorithm_name',
-      'recommended_side', 'side', 'confidence', 'expected_value', 'stake_units',
-      'odds_taken', 'notes', 'placed_at', 'status', 'profit_units',
-    ]
-    const row: Record<string, any> = {}
-    for (const c of cols) if (body[c] !== undefined) row[c] = body[c]
-    if (row.side == null) row.side = row.recommended_side
-    const { data, error } = await supabase.from('bets').insert(row).select().single()
+    // Schema-safe insert: never require optional columns like `side`
+    const pick = (keys: string[]) => {
+      const row: Record<string, any> = {}
+      for (const k of keys) if (body[k] !== undefined && body[k] !== null) row[k] = body[k]
+      return row
+    }
+    // Prefer recommended_side only (side column may not exist)
+    const primary = pick([
+      'game_id',
+      'sport',
+      'home_team',
+      'away_team',
+      'algorithm_id',
+      'algorithm_name',
+      'recommended_side',
+      'confidence',
+      'expected_value',
+      'stake_units',
+      'odds_taken',
+      'notes',
+      'placed_at',
+      'status',
+      'profit_units',
+    ])
+    if (!primary.recommended_side && body.side) primary.recommended_side = body.side
+    if (!primary.status) primary.status = 'pending'
+    if (!primary.placed_at) primary.placed_at = new Date().toISOString()
+    if (primary.stake_units == null) primary.stake_units = 1
+
+    let { data, error } = await supabase.from('bets').insert(primary).select().single()
+    // Retry with minimal columns if schema cache rejects extras
+    if (error && /column|schema cache/i.test(error.message || '')) {
+      const minimal = {
+        game_id: primary.game_id,
+        sport: primary.sport,
+        home_team: primary.home_team,
+        away_team: primary.away_team,
+        algorithm_id: primary.algorithm_id,
+        algorithm_name: primary.algorithm_name,
+        recommended_side: primary.recommended_side,
+        status: primary.status || 'pending',
+        placed_at: primary.placed_at,
+        stake_units: primary.stake_units ?? 1,
+        confidence: primary.confidence,
+        expected_value: primary.expected_value,
+      }
+      const retry = await supabase.from('bets').insert(minimal).select().single()
+      data = retry.data
+      error = retry.error
+    }
     if (error) throw error
     return data
   },
