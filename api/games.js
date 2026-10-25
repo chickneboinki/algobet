@@ -1,31 +1,18 @@
-const MOCK = [
-  { id: 'nfl-1', sport: 'NFL', home_team: 'Kansas City Chiefs', away_team: 'Buffalo Bills', home_abbr: 'KC', away_abbr: 'BUF', start_time: new Date(Date.now()+5*3600e3).toISOString(), status: 'scheduled',
-    odds: { ml_home: -145, ml_away: 125, spread_home: -3, total: 48.5 },
-    books: {
-      fanduel: { ml_home: -145, ml_away: 125, spread_home: -3, total: 48.5 },
-      draftkings: { ml_home: -148, ml_away: 124, spread_home: -3, total: 48 },
-    }},
-  { id: 'nba-1', sport: 'NBA', home_team: 'Boston Celtics', away_team: 'Milwaukee Bucks', home_abbr: 'BOS', away_abbr: 'MIL', start_time: new Date(Date.now()+3*3600e3).toISOString(), status: 'scheduled',
-    odds: { ml_home: -180, ml_away: 155, spread_home: -4.5, total: 228.5 },
-    books: {
-      fanduel: { ml_home: -180, ml_away: 155, spread_home: -4.5, total: 228.5 },
-      draftkings: { ml_home: -175, ml_away: 150, spread_home: -4.5, total: 229 },
-    }},
-  { id: 'ncaaf-1', sport: 'NCAAF', home_team: 'Alabama', away_team: 'Georgia', home_abbr: 'ALA', away_abbr: 'UGA', start_time: new Date(Date.now()+8*3600e3).toISOString(), status: 'scheduled',
-    odds: { ml_home: 140, ml_away: -165, spread_home: 3.5, total: 51.5 },
-    books: {
-      fanduel: { ml_home: 140, ml_away: -165, spread_home: 3.5, total: 51.5 },
-      draftkings: { ml_home: 135, ml_away: -160, spread_home: 3.5, total: 52 },
-    }},
-  { id: 'ncaab-1', sport: 'NCAAB', home_team: 'Duke', away_team: 'North Carolina', home_abbr: 'DUKE', away_abbr: 'UNC', start_time: new Date(Date.now()+6*3600e3).toISOString(), status: 'scheduled',
-    odds: { ml_home: -120, ml_away: 100, spread_home: -2, total: 148.5 },
-    books: {
-      fanduel: { ml_home: -120, ml_away: 100, spread_home: -2, total: 148.5 },
-      draftkings: { ml_home: -115, ml_away: -105, spread_home: -1.5, total: 149 },
-    }},
-];
+/**
+ * Games + DraftKings lines via ESPN public scoreboard (provider: DraftKings).
+ * FanDuel lines via The Odds API when ODDS_API_KEY is set.
+ */
 
-const KEYS = {
+const SPORT_PATHS = {
+  NFL: 'football/nfl',
+  NBA: 'basketball/nba',
+  MLB: 'baseball/mlb',
+  NHL: 'hockey/nhl',
+  NCAAF: 'football/college-football',
+  NCAAB: 'basketball/mens-college-basketball',
+};
+
+const ODDS_KEYS = {
   NFL: 'americanfootball_nfl',
   NBA: 'basketball_nba',
   MLB: 'baseball_mlb',
@@ -34,85 +21,151 @@ const KEYS = {
   NCAAB: 'basketball_ncaab',
 };
 
-const BOOK_KEYS = ['fanduel', 'draftkings', 'betmgm', 'caesars'];
-
-function parseBook(book, home, away) {
-  if (!book) return null;
-  const odds = {};
-  for (const m of book.markets || []) {
-    if (m.key === 'h2h') for (const o of m.outcomes || []) {
-      if (o.name === home) odds.ml_home = o.price;
-      if (o.name === away) odds.ml_away = o.price;
-    }
-    if (m.key === 'spreads') for (const o of m.outcomes || []) {
-      if (o.name === home) { odds.spread_home = o.point; odds.spread_home_price = o.price; }
-      if (o.name === away) { odds.spread_away = o.point; odds.spread_away_price = o.price; }
-    }
-    if (m.key === 'totals') for (const o of m.outcomes || []) {
-      if (o.name.toLowerCase() === 'over') { odds.total = o.point; odds.over_price = o.price; }
-      if (o.name.toLowerCase() === 'under') odds.under_price = o.price;
-    }
-  }
-  return Object.keys(odds).length ? odds : null;
+function parseAmerican(s) {
+  if (s == null) return null;
+  const n = Number(String(s).replace(/^\+/, ''));
+  return Number.isFinite(n) ? n : null;
 }
 
-function deepLinks(sport, home, away) {
-  const q = encodeURIComponent(`${away} ${home}`);
-  return {
-    fanduel: `https://sportsbook.fanduel.com/search?q=${q}`,
-    draftkings: `https://sportsbook.draftkings.com/search?q=${q}`,
-    prizepicks: `https://app.prizepicks.com/`,
-  };
+async function fetchEspn(sport) {
+  const path = SPORT_PATHS[sport] || SPORT_PATHS.NFL;
+  const res = await fetch(`https://site.api.espn.com/apis/site/v2/sports/${path}/scoreboard`, {
+    headers: {
+      'User-Agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15',
+      Accept: 'application/json',
+    },
+  });
+  if (!res.ok) throw new Error(`ESPN ${res.status}`);
+  const data = await res.json();
+  const games = [];
+  for (const ev of data.events || []) {
+    const comp = (ev.competitions || [])[0] || {};
+    const competitors = comp.competitors || [];
+    const home = competitors.find((c) => c.homeAway === 'home');
+    const away = competitors.find((c) => c.homeAway === 'away');
+    const primary = (comp.odds || [])[0] || {};
+    const ml = primary.moneyline || {};
+    const bookName = primary.provider?.name || 'DraftKings';
+    games.push({
+      id: String(ev.id),
+      sport,
+      commence_time: ev.date,
+      home_team: home?.team?.displayName || 'Home',
+      away_team: away?.team?.displayName || 'Away',
+      status: comp.status?.type?.description || null,
+      live: (comp.status?.type?.state || '') === 'in',
+      home_score: home?.score != null ? Number(home.score) : null,
+      away_score: away?.score != null ? Number(away.score) : null,
+      bookmakers: [
+        {
+          key: bookName.toLowerCase().replace(/\s/g, ''),
+          title: bookName,
+          markets: [
+            {
+              key: 'h2h',
+              outcomes: [
+                { name: home?.team?.displayName, price: parseAmerican(ml.home?.close?.odds) },
+                { name: away?.team?.displayName, price: parseAmerican(ml.away?.close?.odds) },
+              ].filter((o) => o.price != null),
+            },
+            {
+              key: 'spreads',
+              outcomes:
+                primary.spread != null
+                  ? [
+                      {
+                        name: home?.team?.displayName,
+                        price: -110,
+                        point: primary.details?.includes('-')
+                          ? -Math.abs(Number(primary.spread))
+                          : Number(primary.spread),
+                      },
+                      {
+                        name: away?.team?.displayName,
+                        price: -110,
+                        point: Number(primary.spread),
+                      },
+                    ]
+                  : [],
+            },
+            {
+              key: 'totals',
+              outcomes:
+                primary.overUnder != null
+                  ? [
+                      { name: 'Over', price: -110, point: Number(primary.overUnder) },
+                      { name: 'Under', price: -110, point: Number(primary.overUnder) },
+                    ]
+                  : [],
+            },
+          ],
+        },
+      ],
+      details: primary.details || null,
+      total: primary.overUnder != null ? Number(primary.overUnder) : null,
+      spread: primary.spread != null ? Number(primary.spread) : null,
+      source: 'espn-draftkings',
+    });
+  }
+  return games;
+}
+
+async function fetchOddsApi(sport) {
+  const key = process.env.ODDS_API_KEY;
+  if (!key) return null;
+  const sk = ODDS_KEYS[sport];
+  if (!sk) return null;
+  const url = `https://api.the-odds-api.com/v4/sports/${sk}/odds?apiKey=${key}&regions=us&markets=h2h,spreads,totals&oddsFormat=american&bookmakers=fanduel,draftkings`;
+  const res = await fetch(url);
+  if (!res.ok) throw new Error(`OddsAPI ${res.status}`);
+  const data = await res.json();
+  return (data || []).map((ev) => ({
+    id: ev.id,
+    sport,
+    commence_time: ev.commence_time,
+    home_team: ev.home_team,
+    away_team: ev.away_team,
+    bookmakers: ev.bookmakers || [],
+    source: 'the-odds-api',
+  }));
 }
 
 export default async function handler(req, res) {
   res.setHeader('Access-Control-Allow-Origin', '*');
   if (req.method === 'OPTIONS') return res.status(200).end();
 
-  const sport = (req.query.sport || '').toUpperCase();
-  const apiKey = process.env.ODDS_API_KEY;
+  const sport = (req.query.sport || 'NFL').toUpperCase();
+  let games = [];
+  let source = 'espn-draftkings';
+  const notes = [];
 
-  if (apiKey) {
+  // Prefer Odds API when key has credits (FanDuel + DraftKings side by side)
+  try {
+    const oa = await fetchOddsApi(sport);
+    if (oa && oa.length) {
+      games = oa;
+      source = 'the-odds-api';
+      notes.push('Live FanDuel + DraftKings from The Odds API');
+    }
+  } catch (e) {
+    notes.push(`OddsAPI: ${e.message}`);
+  }
+
+  if (!games.length) {
     try {
-      const sports = sport ? [sport] : Object.keys(KEYS);
-      const all = [];
-      for (const s of sports) {
-        const key = KEYS[s];
-        if (!key) continue;
-        const url = `https://api.the-odds-api.com/v4/sports/${key}/odds?apiKey=${apiKey}&regions=us&markets=h2h,spreads,totals&oddsFormat=american&bookmakers=fanduel,draftkings,betmgm,caesars`;
-        const r = await fetch(url);
-        if (!r.ok) continue;
-        const data = await r.json();
-        for (const ev of data) {
-          const books = {};
-          for (const b of ev.bookmakers || []) {
-            if (!BOOK_KEYS.includes(b.key)) continue;
-            const parsed = parseBook(b, ev.home_team, ev.away_team);
-            if (parsed) books[b.key] = parsed;
-          }
-          const primary = books.fanduel || books.draftkings || Object.values(books)[0] || {};
-          all.push({
-            id: ev.id,
-            sport: s,
-            home_team: ev.home_team,
-            away_team: ev.away_team,
-            home_abbr: (ev.home_team || '').split(' ').pop().slice(0, 3).toUpperCase(),
-            away_abbr: (ev.away_team || '').split(' ').pop().slice(0, 3).toUpperCase(),
-            start_time: ev.commence_time,
-            status: 'scheduled',
-            odds: primary,
-            books,
-            links: deepLinks(s, ev.home_team, ev.away_team),
-          });
-        }
-      }
-      if (all.length) return res.status(200).json({ source: 'the-odds-api', games: all });
+      games = await fetchEspn(sport);
+      source = 'espn-draftkings';
+      notes.push('DraftKings lines via ESPN public scoreboard');
     } catch (e) {
-      console.error(e);
+      notes.push(`ESPN: ${e.message}`);
     }
   }
 
-  let games = MOCK.map(g => ({ ...g, links: deepLinks(g.sport, g.home_team, g.away_team) }));
-  if (sport) games = games.filter(g => g.sport === sport);
-  return res.status(200).json({ source: 'mock', games });
+  return res.status(200).json({
+    source,
+    sport,
+    count: games.length,
+    games,
+    note: notes.join(' | ') || null,
+  });
 }
