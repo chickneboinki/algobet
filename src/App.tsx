@@ -4,6 +4,7 @@ import GamesPage from './pages/GamesPage'
 import AlgorithmsPage from './pages/AlgorithmsPage'
 import AILabPage from './pages/AILabPage'
 import HistoryPage from './pages/HistoryPage'
+import BankrollPage from './pages/BankrollPage'
 import WatchPage from './pages/WatchPage'
 import SettingsPage from './pages/SettingsPage'
 
@@ -13,7 +14,7 @@ const tabs = [
   { to: '/tools', label: 'Tools' },
   { to: '/ai', label: 'AI' },
   { to: '/bets', label: 'Bets' },
-  { to: '/setup', label: 'Setup' },
+  { to: '/bankroll', label: 'Bank' },
 ]
 
 export default function App() {
@@ -41,6 +42,8 @@ export default function App() {
           <Route path="/watch" element={<WatchPage />} />
           <Route path="/bets" element={<HistoryPage />} />
           <Route path="/history" element={<HistoryPage />} />
+          <Route path="/bankroll" element={<BankrollPage />} />
+          <Route path="/bank" element={<BankrollPage />} />
           <Route path="/setup" element={<SettingsPage />} />
           <Route path="/settings" element={<SettingsPage />} />
         </Routes>
