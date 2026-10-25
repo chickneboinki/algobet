@@ -32,14 +32,14 @@ function verify(password, salt, hash) {
   }
 }
 
-function makeToken(username) {
+export function makeToken(username) {
   const secret = process.env.SESSION_SECRET || process.env.CRON_SECRET || 'helpbet-dev-secret';
   const payload = Buffer.from(JSON.stringify({ u: username, t: Date.now() })).toString('base64url');
   const sig = crypto.createHmac('sha256', secret).update(payload).digest('base64url');
   return `${payload}.${sig}`;
 }
 
-function readToken(token) {
+export function readToken(token) {
   if (!token || !token.includes('.')) return null;
   const secret = process.env.SESSION_SECRET || process.env.CRON_SECRET || 'helpbet-dev-secret';
   const [payload, sig] = token.split('.');
@@ -51,7 +51,6 @@ function readToken(token) {
   }
   try {
     const data = JSON.parse(Buffer.from(payload, 'base64url').toString());
-    // 90 day remember
     if (Date.now() - (data.t || 0) > 90 * 24 * 3600e3) return null;
     return data.u;
   } catch {
@@ -96,12 +95,31 @@ export default async function handler(req, res) {
     if (!r.ok) {
       const t = await r.text();
       if (/duplicate|unique/i.test(t)) return res.status(409).json({ error: 'Username already taken' });
-      return res.status(502).json({
-        error: `Could not create account. Run SQL to create table hb_users. Detail: ${t.slice(0, 200)}`,
-      });
+      return res.status(502).json({ error: t.slice(0, 200) });
     }
-    const token = makeToken(user);
-    return res.status(200).json({ ok: true, username: user, token, message: 'Account created' });
+    // Empty personal settings — no shared webhook
+    await fetch(`${client.url}/rest/v1/user_settings`, {
+      method: 'POST',
+      headers: { ...client.headers, Prefer: 'resolution=ignore-duplicates,return=minimal' },
+      body: JSON.stringify({
+        username: user,
+        discord_webhook: null,
+        notify_config: {
+          mode: 'single',
+          default_webhook: '',
+          league_webhooks: {},
+          auto_post_leagues: ['NFL', 'NCAAF', 'NCAAB', 'NBA', 'MLB', 'NHL'],
+          auto_post_hour_ct: 6,
+        },
+        updated_at: new Date().toISOString(),
+      }),
+    }).catch(() => {});
+    return res.status(200).json({
+      ok: true,
+      username: user,
+      token: makeToken(user),
+      message: 'Account created. Add your own Discord webhook in Setup.',
+    });
   }
 
   if (action === 'login') {
