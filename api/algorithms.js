@@ -3,6 +3,30 @@ function americanToProb(odds) {
   return odds > 0 ? 100 / (odds + 100) : Math.abs(odds) / (Math.abs(odds) + 100);
 }
 
+function normalizeGame(game) {
+  const g = { ...(game || {}) };
+  const books = g.books || {};
+  // prefer explicit odds, else first book, else flatten
+  let o = { ...(g.odds || {}) };
+  const fd = books.fanduel || {};
+  const dk = books.draftkings || {};
+  o.ml_home = o.ml_home ?? fd.ml_home ?? dk.ml_home ?? null;
+  o.ml_away = o.ml_away ?? fd.ml_away ?? dk.ml_away ?? null;
+  o.spread_home = o.spread_home ?? o.spread ?? fd.spread ?? dk.spread ?? null;
+  o.spread = o.spread_home;
+  o.total = o.total ?? fd.total ?? dk.total ?? null;
+  g.odds = o;
+  // mirror spread_home on books for soft-line
+  const books2 = { ...books };
+  for (const k of Object.keys(books2)) {
+    const b = { ...books2[k] };
+    if (b.spread != null && b.spread_home == null) b.spread_home = b.spread;
+    books2[k] = b;
+  }
+  g.books = books2;
+  return g;
+}
+
 function underdog(game) {
   const o = game.odds || {};
   const mlH = o.ml_home ?? -110, mlA = o.ml_away ?? -110;
@@ -37,10 +61,12 @@ function softLine(game) {
   const fd = books.fanduel, dk = books.draftkings;
   if (!fd || !dk)
     return { algorithm_id: 'soft-line-v1', algorithm_name: 'Soft Line', recommended_side: 'none', confidence: 0.2, expected_value: 0, suggested_stake_units: 0, reasoning: 'Need both FanDuel and DraftKings lines to compare.', key_factors: [] };
-  if (fd.spread_home != null && dk.spread_home != null) {
-    const gap = Math.abs(fd.spread_home - dk.spread_home);
+  const fdSpr = fd.spread_home ?? fd.spread;
+  const dkSpr = dk.spread_home ?? dk.spread;
+  if (fdSpr != null && dkSpr != null) {
+    const gap = Math.abs(fdSpr - dkSpr);
     if (gap >= 1) {
-      const betterSide = fd.spread_home > dk.spread_home ? 'home' : 'away';
+      const betterSide = fdSpr > dkSpr ? 'home' : 'away';
       return { algorithm_id: 'soft-line-v1', algorithm_name: 'Soft Line', recommended_side: betterSide, confidence: 0.62, expected_value: 0.045, suggested_stake_units: 1, reasoning: `FanDuel and DraftKings disagree on the spread by ${gap} points. Taking the softer number on the ${betterSide} side.`, key_factors: [`Spread gap ${gap}`] };
     }
   }
@@ -64,7 +90,7 @@ function blowoutFade(game) {
   if (s !== 'NCAAF' && s !== 'NCAAB')
     return { algorithm_id: 'blowout-fade-v1', algorithm_name: 'College Blowout Fade', recommended_side: 'none', confidence: 0.2, expected_value: 0, suggested_stake_units: 0, reasoning: 'Only for college football or basketball.', key_factors: [] };
   const o = game.odds || {};
-  const spread = o.spread_home;
+  const spread = o.spread_home ?? o.spread;
   if (spread != null && Math.abs(spread) >= 17) {
     const dog = spread <= -17 ? 'away' : 'home';
     return { algorithm_id: 'blowout-fade-v1', algorithm_name: 'College Blowout Fade', recommended_side: dog, confidence: 0.54, expected_value: 0.03, suggested_stake_units: 0.5, reasoning: `Line is ${Math.abs(spread)} points. Big college favorites often fail to cover.`, key_factors: ['Large spread'] };
@@ -86,8 +112,9 @@ function nflEngine(game) {
   const mlH = o.ml_home ?? -110, mlA = o.ml_away ?? -110;
   const hP = americanToProb(mlH), aP = americanToProb(mlA);
   let spreadGap = 0;
-  if (books.fanduel?.spread_home != null && books.draftkings?.spread_home != null)
-    spreadGap = Math.abs(books.fanduel.spread_home - books.draftkings.spread_home);
+  const fdSpr = books.fanduel?.spread_home ?? books.fanduel?.spread;
+  const dkSpr = books.draftkings?.spread_home ?? books.draftkings?.spread;
+  if (fdSpr != null && dkSpr != null) spreadGap = Math.abs(fdSpr - dkSpr);
   const underdogIsAway = mlA > mlH;
   const dogPrice = underdogIsAway ? mlA : mlH;
   const dogSide = underdogIsAway ? 'away' : 'home';
@@ -111,14 +138,15 @@ function ncaaEngine(game) {
   const o = game.odds || {};
   const books = game.books || {};
   const mlH = o.ml_home ?? -110, mlA = o.ml_away ?? -110;
-  const spread = o.spread_home;
+  const spread = o.spread_home ?? o.spread;
   if ((mlH <= -300) || (mlA <= -300) || (spread != null && Math.abs(spread) >= 17)) {
     const dogSide = (mlH <= -300 || (spread != null && spread <= -17)) ? 'away' : 'home';
     return { algorithm_id: 'ncaa-engine-v1', algorithm_name: 'NCAA Engine', recommended_side: dogSide, confidence: 0.54, expected_value: 0.03, suggested_stake_units: 0.5, reasoning: 'College market often overprices huge favorites. Small lean to dog.', key_factors: ['Extreme line'] };
   }
   let spreadGap = 0;
-  if (books.fanduel?.spread_home != null && books.draftkings?.spread_home != null)
-    spreadGap = Math.abs(books.fanduel.spread_home - books.draftkings.spread_home);
+  const fdSpr = books.fanduel?.spread_home ?? books.fanduel?.spread;
+  const dkSpr = books.draftkings?.spread_home ?? books.draftkings?.spread;
+  if (fdSpr != null && dkSpr != null) spreadGap = Math.abs(fdSpr - dkSpr);
   const underdogIsAway = mlA > mlH;
   const dogSide = underdogIsAway ? 'away' : 'home';
   const dogPrice = underdogIsAway ? mlA : mlH;
@@ -151,7 +179,7 @@ export default async function handler(req, res) {
     const { algorithm_id, game } = req.body || {};
     const algo = ALGOS[algorithm_id];
     if (!algo) return res.status(404).json({ error: 'Tool not found' });
-    const result = algo.evaluate(game || {});
+    const result = algo.evaluate(normalizeGame(game || {}));
     result.timestamp = new Date().toISOString();
     result.game_id = game?.id;
     return res.status(200).json(result);
