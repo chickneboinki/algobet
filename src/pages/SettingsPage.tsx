@@ -28,7 +28,6 @@ export default function SettingsPage() {
         setMode('per_league')
         setMultiOpen(true)
       }
-      // never prefill a shared webhook — only this account's
       setDefaultWebhook(s?.discord_webhook || cfg.default_webhook || '')
       setLeagueHooks(cfg.league_webhooks || {})
       if (Array.isArray(cfg.auto_post_leagues) && cfg.auto_post_leagues.length) setLeagues(cfg.auto_post_leagues)
@@ -64,7 +63,7 @@ export default function SettingsPage() {
         discord_webhook: defaultWebhook.trim() || null,
         notify_config,
       })
-      setMsg('Saved to YOUR account only. Other users never see this webhook.')
+      setMsg('Saved to YOUR account only.')
     } catch (e: any) {
       setMsg(e.message || 'Save failed')
     }
@@ -77,20 +76,39 @@ export default function SettingsPage() {
   }
 
   const testSend = async () => {
-    if (!loadSession()) {
-      setMsg('Log in first')
+    const wh = defaultWebhook.trim()
+    if (!wh.includes('discord.com/api/webhooks')) {
+      setMsg('Paste your Discord webhook above first, then Save, then Send.')
       return
     }
     setTesting(true)
     setMsg('')
     try {
+      // Always save first so the account keeps the webhook
+      if (loadSession()) {
+        await api.saveUserSettings({
+          discord_webhook: wh,
+          notify_config: {
+            mode,
+            default_webhook: wh,
+            league_webhooks: mode === 'per_league' ? leagueHooks : {},
+            auto_post_leagues: leagues,
+            auto_post_hour_ct: hourCt,
+          },
+        })
+      }
       const r = await api.notifyDiscord({
-        title: 'HelpBet · All bets for today (test)',
+        title: 'HelpBet · All bets for today',
         leagues,
+        webhook_url: wh,
       })
-      setMsg(r.ok ? `Posted ${r.cards ?? r.picks ?? ''} cards — check Discord` : r.error || 'Done')
+      setMsg(
+        r.ok
+          ? `Posted ${r.cards ?? 0} game cards (colors + buttons). Scroll Discord for DIFFERENT LEAGUE banners and THIS IS ALL BETS FOR TODAY.`
+          : r.error || 'Done'
+      )
     } catch (e: any) {
-      setMsg(e.message || 'Test failed — save your webhook first')
+      setMsg(e.message || 'Test failed')
     } finally {
       setTesting(false)
     }
@@ -106,11 +124,10 @@ export default function SettingsPage() {
       setSession(s)
       setMsg(
         action === 'register'
-          ? 'Account created. No webhook yet — paste yours below and Save.'
+          ? 'Account created. Paste your webhook below → Save → Send all today.'
           : 'Logged in'
       )
       setAuthPass('')
-      setDefaultWebhook('')
     } catch (e: any) {
       setMsg(e.message || 'Auth failed')
     } finally {
@@ -174,19 +191,17 @@ export default function SettingsPage() {
 
       <div className="card space-y-3">
         <h3 className="font-semibold">Your Discord webhook</h3>
-        <p className="hint text-xs">Blank on new accounts. Only posts to channels you add.</p>
+        <p className="hint text-xs">Required for Send. Blank on new accounts.</p>
         <input
           value={defaultWebhook}
           onChange={(e) => setDefaultWebhook(e.target.value)}
           placeholder="https://discord.com/api/webhooks/..."
           className="w-full bg-black/40 border border-white/10 rounded-xl px-3 py-2.5 text-xs"
-          disabled={!session}
         />
         {!multiOpen ? (
           <button
             type="button"
             className="btn-ghost w-full text-sm"
-            disabled={!session}
             onClick={() => {
               setMultiOpen(true)
               setMode('per_league')
@@ -216,7 +231,7 @@ export default function SettingsPage() {
 
       <div className="card space-y-3">
         <h3 className="font-semibold">Auto-post</h3>
-        <p className="hint text-xs">Daily ~6 AM CT posts ALL ranked bets for today, by league, with book buttons.</p>
+        <p className="hint text-xs">Daily ~6 AM CT · league colors · FanDuel / DK / PrizePicks buttons.</p>
         <label className="block text-sm">
           <span className="text-zinc-400">Preferred hour (Central)</span>
           <input
@@ -241,7 +256,7 @@ export default function SettingsPage() {
         <button type="button" className="btn-primary flex-1" onClick={saveNotify} disabled={!session}>
           Save settings
         </button>
-        <button type="button" className="btn-ghost flex-1" disabled={testing || !session} onClick={testSend}>
+        <button type="button" className="btn-ghost flex-1" disabled={testing} onClick={testSend}>
           {testing ? 'Sending…' : 'Send all today'}
         </button>
       </div>
