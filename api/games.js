@@ -58,8 +58,15 @@ function booksFromBookmakers(bookmakers, home, away) {
         }
       }
       if (m.key === 'spreads') {
+        // `spread` must be the HOME team's spread. Match by team name instead of taking the first outcome.
+        const homeO = outcomes.find((o) => o.point != null && teamMatch(o.name, home));
+        const awayO = outcomes.find((o) => o.point != null && teamMatch(o.name, away));
+        if (row.spread == null) {
+          if (homeO) row.spread = homeO.point;
+          else if (awayO) row.spread = -awayO.point;
+          else if (outcomes[0]?.point != null) row.spread = outcomes[0].point;
+        }
         for (const o of outcomes) {
-          if (row.spread == null && o.point != null) row.spread = o.point;
           bets.push({
             book: bm.title || key,
             market: 'Spread',
