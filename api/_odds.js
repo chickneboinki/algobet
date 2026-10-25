@@ -118,3 +118,28 @@ export function winChanceTool(game) {
     key_factors: [`${pct(prob)}% win chance`, `${best.book} ${price}`],
   };
 }
+
+/** "Underdog Value": the Win Chance idea, restricted to the underdog side. */
+export function underdogValueTool(game) {
+  const base = { algorithm_id: 'underdog-value-v1', algorithm_name: 'Underdog Value' };
+  const none = (reasoning, conf = 0.3) => ({ ...base, recommended_side: 'none', confidence: conf, expected_value: 0, suggested_stake_units: 0, reasoning, key_factors: [] });
+  const c = consensus(game);
+  if (!c) return none('No moneyline prices to work from.', 0.2);
+  if (c.books_used < 2) return none('Needs prices from two sportsbooks to compare.', 0.3);
+  const dogIsHome = c.best_home.price > c.best_away.price;
+  const ev = dogIsHome ? c.edge_home : c.edge_away;
+  if (ev < 0.01) return none('The underdog’s price is fair for its win chance. No value here.', 0.35);
+  const team = dogIsHome ? game.home_team : game.away_team;
+  const prob = dogIsHome ? c.home_prob : c.away_prob;
+  const best = dogIsHome ? c.best_home : c.best_away;
+  const p = `${best.price > 0 ? '+' : ''}${best.price}`;
+  return {
+    ...base,
+    recommended_side: dogIsHome ? 'home' : 'away',
+    confidence: Math.min(0.72, 0.5 + ev * 4),
+    expected_value: ev,
+    suggested_stake_units: 1,
+    reasoning: `The books give ${team} about a ${Math.round(prob * 100)}% win chance. ${best.book} pays ${p}, which is worth more than that — roughly a ${(ev * 100).toFixed(1)}% edge.`,
+    key_factors: [`${Math.round(prob * 100)}% win chance`, `${best.book} ${p}`],
+  };
+}

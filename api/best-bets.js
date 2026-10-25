@@ -1,22 +1,12 @@
 import { getGames } from './games.js';
-import { normalizeForTools, winChanceTool } from './_odds.js';
+import { normalizeForTools, winChanceTool, underdogValueTool } from './_odds.js';
 
 function americanToProb(odds) {
   if (odds == null) return 0.5;
   return odds > 0 ? 100 / (odds + 100) : Math.abs(odds) / (Math.abs(odds) + 100);
 }
 
-function underdog(game) {
-  const o = game.odds || {};
-  const mlH = o.ml_home ?? -110, mlA = o.ml_away ?? -110;
-  const hP = americanToProb(mlH), aP = americanToProb(mlA);
-  const hEV = 0.48 - hP, aEV = 0.52 - aP;
-  if (aEV > hEV && aEV > 0.03)
-    return { algorithm_id: 'underdog-value-v1', algorithm_name: 'Underdog Value', recommended_side: 'away', confidence: Math.min(0.82, 0.52 + aEV * 2.2), expected_value: aEV, reasoning: `Away shows about ${(aEV * 100).toFixed(1)}% edge after the sportsbook take.` };
-  if (hEV > 0.03)
-    return { algorithm_id: 'underdog-value-v1', algorithm_name: 'Underdog Value', recommended_side: 'home', confidence: Math.min(0.82, 0.52 + hEV * 2.2), expected_value: hEV, reasoning: `Home shows about ${(hEV * 100).toFixed(1)}% edge after the sportsbook take.` };
-  return null;
-}
+const underdog = (game) => underdogValueTool(game);
 
 function homeAdv(game) {
   const s = (game.sport || '').toUpperCase();

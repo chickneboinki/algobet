@@ -1,4 +1,4 @@
-import { winChanceTool } from './_odds.js';
+import { winChanceTool, underdogValueTool } from './_odds.js';
 
 function americanToProb(odds) {
   if (odds == null) return 0.5;
@@ -29,17 +29,7 @@ function normalizeGame(game) {
   return g;
 }
 
-function underdog(game) {
-  const o = game.odds || {};
-  const mlH = o.ml_home ?? -110, mlA = o.ml_away ?? -110;
-  const hP = americanToProb(mlH), aP = americanToProb(mlA);
-  const hEV = 0.48 - hP, aEV = 0.52 - aP;
-  if (aEV > hEV && aEV > 0.03)
-    return { algorithm_id: 'underdog-value-v1', algorithm_name: 'Underdog Value', recommended_side: 'away', confidence: Math.min(0.82, 0.52 + aEV * 2.2), expected_value: aEV, suggested_stake_units: 1.5, reasoning: `Away shows about ${(aEV * 100).toFixed(1)}% edge after the sportsbook take.`, key_factors: ['Market price'] };
-  if (hEV > 0.03)
-    return { algorithm_id: 'underdog-value-v1', algorithm_name: 'Underdog Value', recommended_side: 'home', confidence: Math.min(0.82, 0.52 + hEV * 2.2), expected_value: hEV, suggested_stake_units: 1.5, reasoning: `Home shows about ${(hEV * 100).toFixed(1)}% edge after the sportsbook take.`, key_factors: ['Market price'] };
-  return { algorithm_id: 'underdog-value-v1', algorithm_name: 'Underdog Value', recommended_side: 'none', confidence: 0.35, expected_value: 0, suggested_stake_units: 0, reasoning: 'No clear value edge right now.', key_factors: [] };
-}
+const underdog = (game) => underdogValueTool(game);
 
 function homeAdv(game) {
   const s = (game.sport || '').toUpperCase();
@@ -165,7 +155,7 @@ const ALGOS = {
   'soft-line-v1': { id: 'soft-line-v1', name: 'Soft Line', description: 'Compares FanDuel vs DraftKings. Picks the softer number when books disagree.', created_by: 'system', tags: ['arbitrage-style'], evaluate: softLine },
   'home-dog-v1': { id: 'home-dog-v1', name: 'Home Underdog', description: 'Home dogs priced +100 to +180.', created_by: 'system', tags: ['preset'], evaluate: homeDog },
   'blowout-fade-v1': { id: 'blowout-fade-v1', name: 'College Blowout Fade', description: 'Fades huge college favorites (−17 or worse / −300 ML).', created_by: 'system', tags: ['college', 'preset'], evaluate: blowoutFade },
-  'underdog-value-v1': { id: 'underdog-value-v1', name: 'Underdog Value', description: 'Looks for sides with positive edge after the sportsbook take.', created_by: 'system', tags: ['value'], evaluate: underdog },
+  'underdog-value-v1': { id: 'underdog-value-v1', name: 'Underdog Value', description: 'Takes the underdog when a sportsbook pays more than its real win chance deserves.', created_by: 'system', tags: ['value'], evaluate: underdog },
   'home-advantage-v1': { id: 'home-advantage-v1', name: 'Home Edge', description: 'Favors home when the market may underprice home field or court.', created_by: 'system', tags: ['home'], evaluate: homeAdv },
   'contrarian-public-v1': { id: 'contrarian-public-v1', name: 'Fade Heavy Favorite', description: 'Fades favorites at −200 or worse.', created_by: 'system', tags: ['contrarian'], evaluate: contrarian },
 };

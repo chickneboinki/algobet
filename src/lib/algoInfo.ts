@@ -18,9 +18,9 @@ export const ALGO_INFO: Record<string, AlgoInfo> = {
     style: 'Win chance',
   },
   'underdog-value-v1': {
-    what: 'Looks for a team whose odds pay more than their real chance of winning.',
-    picksWhen: 'A team’s price looks too generous once the sportsbook’s cut is removed.',
-    skipsWhen: 'The prices on both teams look fair.',
+    what: 'Takes the underdog when a sportsbook pays more than its real win chance deserves.',
+    picksWhen: 'The underdog’s best price is worth at least 1% more than its win chance (needs two books).',
+    skipsWhen: 'The underdog’s price is fair, or only one book is posted.',
     leagues: 'All leagues',
     style: 'Value',
   },
