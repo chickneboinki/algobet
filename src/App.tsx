@@ -62,10 +62,10 @@ export default function App() {
       <header className="app-header">
         <div className="flex items-center gap-3">
           <div className="w-8 h-8 rounded-[10px] bg-[var(--accent)] flex items-center justify-center text-[13px] font-bold text-[#06121f]">
-            A
+            H
           </div>
           <div>
-            <h1 className="text-[16px] font-semibold tracking-tight leading-tight">AlgoBet</h1>
+            <h1 className="text-[16px] font-semibold tracking-tight leading-tight">HelpBet</h1>
             <p className="text-[11px] text-zinc-500 leading-none mt-0.5">Find value. Track results.</p>
           </div>
         </div>

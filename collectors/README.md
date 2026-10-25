@@ -1,4 +1,4 @@
-# AlgoBet sportsbook collectors
+# HelpBet sportsbook collectors
 
 Node service that reads the public JSON feeds sportsbook **websites** use, normalizes them, caches to disk, and retries on errors.
 

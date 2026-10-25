@@ -1,4 +1,4 @@
-# AlgoBet
+# HelpBet
 
 AI-powered sports algorithm platform.
 
