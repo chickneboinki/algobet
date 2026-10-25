@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import { api } from '../services/api'
 import { algoInfo, teamFor, confidenceWord, confidenceColor } from '../lib/algoInfo'
+import { winChance, price, spreadText } from '../lib/odds'
 
 const SPORTS = ['NFL', 'NCAAF', 'NCAAB', 'NBA', 'MLB', 'NHL']
 
@@ -39,7 +40,9 @@ export default function GamesPage() {
   const [propsLoading, setPropsLoading] = useState(false)
   const [propsNote, setPropsNote] = useState('')
   const [propsLive, setPropsLive] = useState(0)
-  const [propSearch, setPropSearch] = useState('')
+  const [topPlays, setTopPlays] = useState<any[]>([])
+  const [playerSel, setPlayerSel] = useState('')
+  const [showAllLines, setShowAllLines] = useState(false)
   const [toast, setToast] = useState('')
 
   // tools + AI on game
@@ -79,6 +82,7 @@ export default function GamesPage() {
       setPropsList(Array.isArray(p?.props) ? p.props : [])
       setPropsNote(p?.note || '')
       setPropsLive(Number(p?.live_count || 0))
+      setTopPlays(Array.isArray(p?.top_plays) ? p.top_plays : [])
     } catch (e: any) {
       if (!silent) {
         setPropsNote(String(e?.message || 'Could not load player bets'))
@@ -94,7 +98,9 @@ export default function GamesPage() {
     setPropsList([])
     setPropsNote('')
     setPropsLive(0)
-    setPropSearch('')
+    setTopPlays([])
+    setPlayerSel('')
+    setShowAllLines(false)
     setToolResults([])
     setChatLog([])
     setChatInput('')
@@ -228,15 +234,28 @@ export default function GamesPage() {
     const when = formatWhen(selected.start_time || selected.commence_time)
     const picks = toolResults.filter((t) => t.recommended_side && t.recommended_side !== 'none')
     const hasRun = toolResults.length > 0
-    const needle = propSearch.trim().toLowerCase()
+    const wc = winChance(books)
+    const homeName = selected.home_team || 'Home'
+    const awayName = selected.away_team || 'Away'
+    const mainBook: any = books.fanduel || books.draftkings || Object.values(books)[0] || {}
+
+    // Players: one entry per player, then show only the chosen player's lines
     const byPlayer: Record<string, any[]> = {}
-    for (const pr of propsList) {
-      if (needle && !`${pr.player} ${pr.market_label || pr.market}`.toLowerCase().includes(needle)) continue
-      ;(byPlayer[pr.player] ||= []).push(pr)
-    }
-    const groupedProps = Object.entries(byPlayer)
-      .sort((x, y) => Number(y[1].some((r: any) => r.live)) - Number(x[1].some((r: any) => r.live)) || x[0].localeCompare(y[0]))
-      .slice(0, 40)
+    for (const pr of propsList) (byPlayer[pr.player] ||= []).push(pr)
+    const playerNames = Object.keys(byPlayer).sort((x, y) => {
+      const lx = byPlayer[x].some((r: any) => r.live) ? 1 : 0
+      const ly = byPlayer[y].some((r: any) => r.live) ? 1 : 0
+      return ly - lx || x.localeCompare(y)
+    })
+    const MAIN_RE = /(yards|receptions|attempts|touchdown|td|points|rebounds|assists|goals|shots|saves|strikeouts|hits)/i
+    const rank = (r: any) => (/^(1q|2q|3q|4q|1h|2h)/i.test(r.market) ? 3 : MAIN_RE.test(r.market) ? 1 : 2)
+    const chosenRows = (byPlayer[playerSel] || [])
+      .slice()
+      .sort((x: any, y: any) => rank(x) - rank(y) || String(x.market).localeCompare(String(y.market)))
+    const LINES_SHOWN = 6
+    const visibleRows = showAllLines ? chosenRows : chosenRows.slice(0, LINES_SHOWN)
+    const leanStyle = (st: string) =>
+      st === 'High' ? 'text-emerald-300 bg-emerald-500/10 border-emerald-500/25' : st === 'Medium' ? 'text-sky-300 bg-sky-500/10 border-sky-500/25' : 'text-zinc-300 bg-white/[0.05] border-white/10'
 
     return (
       <div className="space-y-4 pb-8">
@@ -251,6 +270,53 @@ export default function GamesPage() {
           <p className="text-zinc-500 text-sm">at</p>
           <p className="text-lg font-semibold leading-snug">{selected.home_team || 'Home'}</p>
           <p className="text-sky-300 font-medium text-sm pt-2">{when}</p>
+        </div>
+
+        {/* Win chance */}
+        <div className="card space-y-3">
+          <div className="flex items-center justify-between gap-2">
+            <p className="font-semibold text-[15px]">Win chance</p>
+            {wc && <span className="pill">{wc.books === 1 ? '1 sportsbook' : `${wc.books} sportsbooks`}</span>}
+          </div>
+          {wc ? (
+            <>
+              <div className="flex justify-between items-end gap-3">
+                <div className="min-w-0">
+                  <p className="text-[13px] text-zinc-400 truncate">{awayName}</p>
+                  <p className="text-2xl font-bold odds-num tracking-tight">{Math.round(wc.away * 100)}%</p>
+                </div>
+                <div className="min-w-0 text-right">
+                  <p className="text-[13px] text-zinc-400 truncate">{homeName}</p>
+                  <p className="text-2xl font-bold odds-num tracking-tight">{Math.round(wc.home * 100)}%</p>
+                </div>
+              </div>
+              <div className="h-2.5 rounded-full overflow-hidden flex bg-white/[0.06]">
+                <div className="bg-sky-400/80" style={{ width: `${wc.away * 100}%` }} />
+                <div className="bg-violet-400/80" style={{ width: `${wc.home * 100}%` }} />
+              </div>
+              <div className="grid grid-cols-3 gap-2 text-center">
+                <div className="stat-box">
+                  <p className="label">Spread</p>
+                  <p className="text-sm font-semibold mt-1 odds-num">{spreadText(homeName, mainBook.spread)}</p>
+                </div>
+                <div className="stat-box">
+                  <p className="label">Total</p>
+                  <p className="text-sm font-semibold mt-1 odds-num">{mainBook.total != null ? mainBook.total : '—'}</p>
+                </div>
+                <div className="stat-box">
+                  <p className="label">Best price</p>
+                  <p className="text-sm font-semibold mt-1 odds-num">
+                    {wc.home >= wc.away ? price(wc.bestHome.price) : price(wc.bestAway.price)}
+                  </p>
+                </div>
+              </div>
+              <p className="text-[11px] text-zinc-500">
+                Worked out from the sportsbooks’ prices with their cut taken out. It is the market’s view, not a guarantee.
+              </p>
+            </>
+          ) : (
+            <p className="hint">Win chance shows up once sportsbooks post moneyline prices.</p>
+          )}
         </div>
 
         {/* Step 1: picks */}
@@ -389,65 +455,142 @@ export default function GamesPage() {
         </div>
 
         {/* Player bets */}
-        <div className="card space-y-3">
+        <div className="card space-y-4">
           <div className="flex items-center justify-between gap-2">
             <p className="font-semibold text-[15px]">Player bets</p>
             {propsLive > 0 ? (
               <span className="pill pill-good">● {propsLive} live</span>
             ) : (
-              propsList.length > 0 && <span className="pill">{propsList.length} lines</span>
+              propsList.length > 0 && <span className="pill">{playerNames.length} players</span>
             )}
           </div>
 
-          {propsList.length > 0 && (
-            <input
-              value={propSearch}
-              onChange={(e) => setPropSearch(e.target.value)}
-              placeholder="Search a player or stat"
-              className="w-full"
-            />
+          {propsLoading && <p className="text-sm text-zinc-500">Loading player bets…</p>}
+          {!propsLoading && propsList.length === 0 && (
+            <p className="hint">{propsNote || 'No player bets for this game yet.'}</p>
           )}
 
-          {propsLoading && <p className="text-sm text-zinc-500">Loading player bets…</p>}
-          {!propsLoading && propsList.length === 0 && <p className="hint">{propsNote || 'No player bets for this game yet.'}</p>}
-
-          {groupedProps.map(([player, rows]) => (
-            <div key={player} className="rounded-2xl border border-white/[0.08] overflow-hidden">
-              <div className="px-3.5 py-2.5 bg-white/[0.03] flex items-center justify-between gap-2">
-                <p className="font-semibold text-[15px] truncate">{player}</p>
-                {rows.some((r: any) => r.live) && <span className="pill pill-good shrink-0">LIVE</span>}
+          {topPlays.length > 0 && (
+            <div className="space-y-2">
+              <div>
+                <p className="label">Best player bets</p>
+                <p className="text-[11px] text-zinc-500 mt-0.5">Where the books disagree, or the prices lean one way.</p>
               </div>
-              <div className="divide-y divide-white/[0.05]">
-                {rows.map((prop: any) => (
-                  <div key={prop.id} className="px-3.5 py-3 space-y-2">
-                    <div className="flex items-baseline justify-between gap-3">
-                      <p className="text-sm text-zinc-300">{prop.market_label || prop.market}</p>
-                      <p className="text-lg font-bold text-sky-300 odds-num">{prop.line}</p>
+              {topPlays.slice(0, 5).map((t: any) => {
+                const lab = (t.labels || ['Over', 'Under'])[t.lean.side === 'over' ? 0 : 1]
+                return (
+                  <div key={t.id} className="rounded-2xl border border-white/[0.08] bg-white/[0.02] p-3.5 space-y-2">
+                    <div className="flex items-start justify-between gap-3">
+                      <div className="min-w-0">
+                        <p className="font-semibold text-[15px] truncate">{t.player}</p>
+                        <p className="text-xs text-zinc-400 mt-0.5">
+                          {t.market_label || t.market} · {lab} {t.line}
+                        </p>
+                      </div>
+                      <span className={`text-[11px] font-semibold border rounded-full px-2.5 py-0.5 shrink-0 ${leanStyle(t.lean.strength)}`}>
+                        {t.lean.strength}
+                      </span>
                     </div>
-                    <div className="grid grid-cols-2 gap-2">
-                      <button
-                        type="button"
-                        className="rounded-xl border border-emerald-500/30 bg-emerald-500/10 py-2.5 text-sm font-medium active:bg-emerald-500/20"
-                        onClick={() => saveProp(prop, 'over')}
-                      >
-                        {(prop.labels || ['Over', 'Under'])[0]} {prop.over != null ? oddsLabel(prop.over) : ''}
-                      </button>
-                      <button
-                        type="button"
-                        className="rounded-xl border border-rose-500/30 bg-rose-500/10 py-2.5 text-sm font-medium active:bg-rose-500/20"
-                        onClick={() => saveProp(prop, 'under')}
-                      >
-                        {(prop.labels || ['Over', 'Under'])[1]} {prop.under != null ? oddsLabel(prop.under) : ''}
-                      </button>
-                    </div>
-                    <p className="text-[11px] text-zinc-500">{prop.book}</p>
+                    <p className="text-[13px] text-zinc-300 leading-relaxed">{t.lean.why}</p>
+                    <button type="button" className="btn-ghost w-full" onClick={() => saveProp(t, t.lean.side)}>
+                      Save {lab} {t.line}
+                    </button>
                   </div>
-                ))}
-              </div>
+                )
+              })}
             </div>
-          ))}
-          {propsList.length > 0 && groupedProps.length === 0 && <p className="hint">No match for “{propSearch}”.</p>}
-          {propsList.length > 0 && <p className="text-[11px] text-zinc-600">Updates every 30 seconds while this page is open.</p>}
+          )}
+
+          {playerNames.length > 0 && (
+            <div className="space-y-3">
+              <label className="block">
+                <span className="label">View a player’s lines</span>
+                <select
+                  value={playerSel}
+                  onChange={(e) => {
+                    setPlayerSel(e.target.value)
+                    setShowAllLines(false)
+                  }}
+                  className="w-full mt-1.5"
+                >
+                  <option value="">Choose a player…</option>
+                  {playerNames.map((n) => {
+                    const t = byPlayer[n].find((r: any) => r.team)?.team
+                    return (
+                      <option key={n} value={n}>
+                        {n}
+                        {t ? ` · ${t}` : ''} ({byPlayer[n].length})
+                      </option>
+                    )
+                  })}
+                </select>
+              </label>
+
+              {!playerSel && <p className="hint">Pick a player to see their lines and save a bet.</p>}
+
+              {playerSel && (
+                <div className="rounded-2xl border border-white/[0.08] overflow-hidden">
+                  <div className="px-3.5 py-3 bg-white/[0.03] flex items-center justify-between gap-2">
+                    <p className="font-semibold text-[15px] truncate">{playerSel}</p>
+                    <span className="text-xs text-zinc-500 shrink-0">{chosenRows.length} lines</span>
+                  </div>
+                  <div className="divide-y divide-white/[0.05]">
+                    {visibleRows.map((prop: any) => {
+                      const labs = prop.labels || ['Over', 'Under']
+                      return (
+                        <div key={prop.id} className="px-3.5 py-3 space-y-2.5">
+                          <div className="flex items-baseline justify-between gap-3">
+                            <div className="min-w-0">
+                              <p className="text-sm text-zinc-200">{prop.market_label || prop.market}</p>
+                              <p className="text-[11px] text-zinc-500 mt-0.5">
+                                {prop.book}
+                                {prop.live ? ' · LIVE' : ''}
+                              </p>
+                            </div>
+                            <p className="text-xl font-bold text-sky-300 odds-num">{prop.line}</p>
+                          </div>
+                          {prop.lean && (
+                            <p className={`text-[12px] rounded-lg border px-2.5 py-1.5 ${leanStyle(prop.lean.strength)}`}>
+                              <span className="font-semibold">
+                                {labs[prop.lean.side === 'over' ? 0 : 1]} · {prop.lean.strength}
+                              </span>{' '}
+                              — {prop.lean.why}
+                            </p>
+                          )}
+                          <div className="grid grid-cols-2 gap-2">
+                            <button
+                              type="button"
+                              className="rounded-xl border border-emerald-500/30 bg-emerald-500/10 py-2.5 text-sm font-medium active:bg-emerald-500/20"
+                              onClick={() => saveProp(prop, 'over')}
+                            >
+                              {labs[0]} {prop.over != null ? oddsLabel(prop.over) : ''}
+                            </button>
+                            <button
+                              type="button"
+                              className="rounded-xl border border-rose-500/30 bg-rose-500/10 py-2.5 text-sm font-medium active:bg-rose-500/20"
+                              onClick={() => saveProp(prop, 'under')}
+                            >
+                              {labs[1]} {prop.under != null ? oddsLabel(prop.under) : ''}
+                            </button>
+                          </div>
+                        </div>
+                      )
+                    })}
+                  </div>
+                  {chosenRows.length > LINES_SHOWN && (
+                    <button
+                      type="button"
+                      className="w-full py-3 text-sm text-sky-400 border-t border-white/[0.05]"
+                      onClick={() => setShowAllLines((v) => !v)}
+                    >
+                      {showAllLines ? 'Show fewer lines' : `Show all ${chosenRows.length} lines`}
+                    </button>
+                  )}
+                </div>
+              )}
+              <p className="text-[11px] text-zinc-600">Updates every 30 seconds while this page is open.</p>
+            </div>
+          )}
         </div>
 
         {toast && <div className="toast">{toast}</div>}

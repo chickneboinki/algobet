@@ -1,3 +1,5 @@
+import { americanToProb } from './_odds.js';
+
 /**
  * Live player props for ONE game.
  * Sources: PrizePicks (More/Less) + Underdog (Higher/Lower, with prices).
@@ -26,6 +28,77 @@ function teamKeys(name, sport) {
 function textHasTeam(text, keys) {
   const t = ` ${norm(text)} `;
   return keys.some((k) => t.includes(` ${k} `));
+}
+
+
+/** Make "Rush+Rec Yds" and "Rush + Rec Yards" look the same so books can be compared. */
+function marketKey(m) {
+  return norm(String(m || '').replace(/\s*\+\s*/g, '+'))
+    .replace(/\byds\b/g, 'yards')
+    .replace(/\brec\b/g, 'receiving')
+    .replace(/\breceiving\+/g, 'rec+');
+}
+
+const STRENGTH_RANK = { High: 3, Medium: 2, Low: 1 };
+
+/**
+ * Two simple player tools:
+ *  1) Line Gap   - PrizePicks and Underdog post different lines for the same stat.
+ *                  The lower number is the easier Over, the higher number the easier Under.
+ *  2) Market Lean - Underdog's Over/Under prices show which side the market thinks is likelier.
+ */
+function addPlayerTools(props) {
+  const groups = new Map();
+  for (const p of props) {
+    const k = `${norm(p.player)}|${marketKey(p.market)}`;
+    if (!groups.has(k)) groups.set(k, []);
+    groups.get(k).push(p);
+  }
+
+  for (const rows of groups.values()) {
+    const pp = rows.find((r) => r.source === 'prizepicks');
+    const ud = rows.find((r) => r.source === 'underdog');
+
+    // 1) Line gap
+    if (pp && ud && pp.line != null && ud.line != null) {
+      const diff = Math.abs(pp.line - ud.line);
+      const avg = (pp.line + ud.line) / 2;
+      const needed = Math.max(1, avg * 0.04);
+      if (diff >= needed) {
+        const low = pp.line < ud.line ? pp : ud;
+        const high = low === pp ? ud : pp;
+        const pct = diff / avg;
+        const strength = pct >= 0.08 ? 'High' : pct >= 0.05 ? 'Medium' : 'Low';
+        low.lean = {
+          side: 'over', strength, type: 'Line gap', gap: diff,
+          why: `${high.book} has this at ${high.line} but ${low.book} has it at ${low.line}. Over ${low.line} is the easier number.`,
+        };
+        high.lean = {
+          side: 'under', strength, type: 'Line gap', gap: diff,
+          why: `${high.book} has this at ${high.line} but ${low.book} has it at ${low.line}. Under ${high.line} is the easier number.`,
+        };
+      }
+    }
+
+    // 2) Market lean (only if no line gap already set, and both prices exist)
+    for (const r of rows) {
+      if (r.lean || r.over == null || r.under == null) continue;
+      const po = americanToProb(r.over);
+      const pu = americanToProb(r.under);
+      if (po == null || pu == null) continue;
+      const overProb = po / (po + pu);
+      const side = overProb >= 0.5 ? 'over' : 'under';
+      const prob = side === 'over' ? overProb : 1 - overProb;
+      if (prob < 0.54) continue;
+      r.lean = {
+        side,
+        strength: prob >= 0.6 ? 'High' : prob >= 0.57 ? 'Medium' : 'Low',
+        type: 'Market lean',
+        prob,
+        why: `${r.book}'s prices imply the ${side} hits about ${Math.round(prob * 100)}% of the time.`,
+      };
+    }
+  }
 }
 
 async function fetchJson(url, headers) {
@@ -185,12 +258,30 @@ export default async function handler(req, res) {
     .sort((a, b) => Number(b.live) - Number(a.live) || a.player.localeCompare(b.player))
     .slice(0, 400);
 
+  // Fill in each player's team (Underdog does not say; PrizePicks does)
+  const teamOf = {};
+  for (const p of props) if (p.team) teamOf[norm(p.player)] = p.team;
+  for (const p of props) if (!p.team) p.team = teamOf[norm(p.player)] || null;
+
+  addPlayerTools(props);
+
+  const top_plays = props
+    .filter((p) => p.lean)
+    .sort(
+      (a, b) =>
+        STRENGTH_RANK[b.lean.strength] - STRENGTH_RANK[a.lean.strength] ||
+        (b.lean.type === 'Line gap') - (a.lean.type === 'Line gap') ||
+        (b.lean.gap || b.lean.prob || 0) - (a.lean.gap || a.lean.prob || 0)
+    )
+    .slice(0, 8);
+
   const live_count = props.filter((p) => p.live).length;
 
   return res.status(200).json({
     source: props.length ? 'live' : 'empty',
     count: props.length,
     live_count,
+    top_plays,
     props,
     sources_tried: sources,
     note: props.length

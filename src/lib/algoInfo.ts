@@ -10,6 +10,13 @@ export type AlgoInfo = {
 }
 
 export const ALGO_INFO: Record<string, AlgoInfo> = {
+  'win-chance-v1': {
+    what: 'Works out each team’s real win chance from the sportsbooks, then looks for a price that pays more than that chance deserves.',
+    picksWhen: 'Two sportsbooks are posted and one of them pays at least 1% more than the win chance is worth.',
+    skipsWhen: 'The books agree and every price is fair, or only one book is posted.',
+    leagues: 'All leagues',
+    style: 'Win chance',
+  },
   'underdog-value-v1': {
     what: 'Looks for a team whose odds pay more than their real chance of winning.',
     picksWhen: 'A team’s price looks too generous once the sportsbook’s cut is removed.',
@@ -93,3 +100,19 @@ export function confidenceColor(c?: number) {
   if (v >= 0.55) return 'text-sky-300'
   return 'text-zinc-400'
 }
+
+/** Tools for player bets. These run automatically on every game's Player bets section. */
+export const PLAYER_TOOLS = [
+  {
+    name: 'Line Gap',
+    what: 'Compares PrizePicks and Underdog on the same player and stat.',
+    picksWhen: 'The two lines are at least 1 point (or about 4%) apart. The lower line is the easier Over, the higher line is the easier Under.',
+    strength: 'High when the gap is 8%+ of the line, Medium at 5%+, Low otherwise.',
+  },
+  {
+    name: 'Market Lean',
+    what: 'Reads Underdog’s Over and Under prices to see which side the market thinks is likelier.',
+    picksWhen: 'One side is priced as at least 54% likely to hit, after the sportsbook’s cut is removed.',
+    strength: 'High at 60%+, Medium at 57%+, Low otherwise.',
+  },
+]

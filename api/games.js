@@ -252,38 +252,43 @@ function mergeByTeams(fdGames, dkGames) {
   return out;
 }
 
-export default async function handler(req, res) {
-  res.setHeader('Access-Control-Allow-Origin', '*');
-  res.setHeader('Cache-Control', 's-maxage=60, stale-while-revalidate=120');
-  if (req.method === 'OPTIONS') return res.status(200).end();
-
-  const sport = (req.query.sport || 'NFL').toUpperCase();
+/** Live games for one league (FanDuel + DraftKings merged). Also used by best-bets. */
+export async function getGames(sport) {
   const notes = [];
   let fd = [];
   let dk = [];
-
   try {
     fd = await fetchFanDuel(sport);
     notes.push(`FanDuel ${fd.length}`);
   } catch (e) {
     notes.push(`FanDuel: ${e.message}`);
   }
-
   try {
     dk = await fetchEspnDk(sport);
     notes.push(`DraftKings ${dk.length}`);
   } catch (e) {
     notes.push(`ESPN: ${e.message}`);
   }
+  const games = mergeByTeams(fd, dk)
+    .map(normalizeGame)
+    .map((g) => ({ ...g, sport: g.sport || sport }));
+  return { games, note: notes.join(' | ') };
+}
 
-  const merged = mergeByTeams(fd, dk).map(normalizeGame);
+export default async function handler(req, res) {
+  res.setHeader('Access-Control-Allow-Origin', '*');
+  res.setHeader('Cache-Control', 's-maxage=60, stale-while-revalidate=120');
+  if (req.method === 'OPTIONS') return res.status(200).end();
+
+  const sport = (req.query.sport || 'NFL').toUpperCase();
+  const { games, note } = await getGames(sport);
 
   return res.status(200).json({
     source: 'fanduel+draftkings',
     sport,
-    count: merged.length,
-    games: merged,
-    note: notes.join(' | '),
+    count: games.length,
+    games,
+    note,
     refreshed_at: new Date().toISOString(),
   });
 }

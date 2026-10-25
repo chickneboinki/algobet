@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import { api } from '../services/api'
-import { algoInfo } from '../lib/algoInfo'
+import { algoInfo, PLAYER_TOOLS } from '../lib/algoInfo'
 
 export default function AlgorithmsPage() {
   const [algos, setAlgos] = useState<any[]>([])
@@ -119,6 +119,25 @@ export default function AlgorithmsPage() {
             </div>
           )
         })}
+      </section>
+
+      <section className="space-y-2.5">
+        <p className="section-title">Player bet tools</p>
+        <p className="hint px-0.5">These run on their own inside every game’s Player bets section.</p>
+        {PLAYER_TOOLS.map((t) => (
+          <div key={t.name} className="card space-y-2">
+            <p className="font-semibold text-[15px]">{t.name}</p>
+            <p className="hint">{t.what}</p>
+            <div>
+              <p className="label">Picks when</p>
+              <p className="text-sm text-zinc-200 mt-1">{t.picksWhen}</p>
+            </div>
+            <div>
+              <p className="label">Strength</p>
+              <p className="text-sm text-zinc-200 mt-1">{t.strength}</p>
+            </div>
+          </div>
+        ))}
       </section>
 
       <section className="space-y-2.5">

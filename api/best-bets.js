@@ -1,3 +1,6 @@
+import { getGames } from './games.js';
+import { normalizeForTools, winChanceTool } from './_odds.js';
+
 function americanToProb(odds) {
   if (odds == null) return 0.5;
   return odds > 0 ? 100 / (odds + 100) : Math.abs(odds) / (Math.abs(odds) + 100);
@@ -118,43 +121,14 @@ function ncaaEngine(game) {
   return { algorithm_id: 'ncaa-engine-v1', algorithm_name: 'NCAA Engine', recommended_side: dogSide, confidence: Math.min(0.72, 0.48 + edge * 2.5), expected_value: edge, reasoning: `College evidence: ${spreadGap >= 0.5 ? `spread gap ${spreadGap}. ` : ''}Leans ${dogSide} underdog.` };
 }
 
-const EVALUATORS = [nflEngine, ncaaEngine, softLine, homeDog, blowoutFade, underdog, contrarian, homeAdv];
+const winChance = (game) => winChanceTool(game);
+const EVALUATORS = [winChance, nflEngine, ncaaEngine, softLine, homeDog, blowoutFade, underdog, contrarian, homeAdv];
 
 function scorePick(p, weights) {
   const w = weights[p.algorithm_id] ?? 1;
   const conf = p.confidence || 0.5;
   const ev = Math.max(0, p.expected_value || 0);
   return (conf * 0.55 + Math.min(ev, 0.12) * 4 * 0.45) * w;
-}
-
-function mockGames() {
-  const t = Date.now();
-  const mk = (id, sport, home, away, odds, books) => {
-    const q = encodeURIComponent(`${away} ${home}`);
-    return {
-      id, sport, home_team: home, away_team: away, start_time: new Date(t + 4 * 3600e3).toISOString(),
-      odds, books,
-      links: {
-        fanduel: `https://sportsbook.fanduel.com/search?q=${q}`,
-        draftkings: `https://sportsbook.draftkings.com/search?q=${q}`,
-        prizepicks: 'https://app.prizepicks.com/',
-      },
-    };
-  };
-  return [
-    mk('nfl-1', 'NFL', 'Kansas City Chiefs', 'Buffalo Bills',
-      { ml_home: -145, ml_away: 125, spread_home: -3, total: 48.5 },
-      { fanduel: { ml_home: -145, ml_away: 125, spread_home: -3, total: 48.5 }, draftkings: { ml_home: -148, ml_away: 124, spread_home: -2.5, total: 48 } }),
-    mk('nba-1', 'NBA', 'Boston Celtics', 'Milwaukee Bucks',
-      { ml_home: -180, ml_away: 155, spread_home: -4.5, total: 228.5 },
-      { fanduel: { ml_home: -180, ml_away: 155, spread_home: -4.5, total: 228.5 }, draftkings: { ml_home: -175, ml_away: 150, spread_home: -4.5, total: 229 } }),
-    mk('ncaaf-1', 'NCAAF', 'Alabama', 'Georgia',
-      { ml_home: 140, ml_away: -165, spread_home: 3.5, total: 51.5 },
-      { fanduel: { ml_home: 140, ml_away: -165, spread_home: 3.5, total: 51.5 }, draftkings: { ml_home: 135, ml_away: -160, spread_home: 3, total: 52 } }),
-    mk('ncaab-1', 'NCAAB', 'Duke', 'North Carolina',
-      { ml_home: -120, ml_away: 100, spread_home: -2, total: 148.5 },
-      { fanduel: { ml_home: -120, ml_away: 100, spread_home: -2, total: 148.5 }, draftkings: { ml_home: -115, ml_away: -105, spread_home: -1.5, total: 149 } }),
-  ];
 }
 
 async function loadWeights(supabaseUrl, supabaseKey) {
@@ -184,73 +158,29 @@ async function loadWeights(supabaseUrl, supabaseKey) {
   return weights;
 }
 
-async function fetchGames(oddsKey) {
-  const KEYS = {
-    NFL: 'americanfootball_nfl',
-    NBA: 'basketball_nba',
-    NCAAF: 'americanfootball_ncaaf',
-    NCAAB: 'basketball_ncaab',
-    MLB: 'baseball_mlb',
-    NHL: 'icehockey_nhl',
-  };
-  if (!oddsKey) return mockGames();
-  const all = [];
-  for (const [sport, key] of Object.entries(KEYS)) {
-    try {
-      const url = `https://api.the-odds-api.com/v4/sports/${key}/odds?apiKey=${oddsKey}&regions=us&markets=h2h,spreads,totals&oddsFormat=american&bookmakers=fanduel,draftkings`;
-      const r = await fetch(url);
-      if (!r.ok) continue;
-      const data = await r.json();
-      if (!Array.isArray(data)) continue;
-      for (const ev of data) {
-        const books = {};
-        for (const b of ev.bookmakers || []) {
-          const odds = {};
-          for (const m of b.markets || []) {
-            if (m.key === 'h2h') for (const o of m.outcomes || []) {
-              if (o.name === ev.home_team) odds.ml_home = o.price;
-              if (o.name === ev.away_team) odds.ml_away = o.price;
-            }
-            if (m.key === 'spreads') for (const o of m.outcomes || []) {
-              if (o.name === ev.home_team) odds.spread_home = o.point;
-              if (o.name === ev.away_team) odds.spread_away = o.point;
-            }
-            if (m.key === 'totals') for (const o of m.outcomes || []) {
-              if (o.name.toLowerCase() === 'over') odds.total = o.point;
-            }
-          }
-          if (Object.keys(odds).length) books[b.key] = odds;
-        }
-        const primary = books.fanduel || books.draftkings || {};
-        const q = encodeURIComponent(`${ev.away_team} ${ev.home_team}`);
-        all.push({
-          id: ev.id, sport, home_team: ev.home_team, away_team: ev.away_team, start_time: ev.commence_time,
-          odds: primary, books,
-          links: {
-            fanduel: `https://sportsbook.fanduel.com/search?q=${q}`,
-            draftkings: `https://sportsbook.draftkings.com/search?q=${q}`,
-            prizepicks: 'https://app.prizepicks.com/',
-          },
-        });
-      }
-    } catch (_) {}
-  }
-  return all.length ? all : mockGames();
+const LEAGUES = ['NFL', 'NBA', 'NCAAF', 'NCAAB', 'MLB', 'NHL'];
+
+/** Real games from FanDuel + DraftKings (the same source as the Games tab). */
+async function fetchGames() {
+  const results = await Promise.all(
+    LEAGUES.map((sport) => getGames(sport).then((r) => r.games).catch(() => []))
+  );
+  return results.flat().filter((g) => g.odds || Object.keys(g.books || {}).length);
 }
 
 export default async function handler(req, res) {
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'GET,POST,OPTIONS');
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
+  res.setHeader('Cache-Control', 's-maxage=60, stale-while-revalidate=120');
   if (req.method === 'OPTIONS') return res.status(200).end();
 
-  const oddsKey = process.env.ODDS_API_KEY;
   const supabaseUrl = process.env.VITE_SUPABASE_URL || process.env.SUPABASE_URL;
   const supabaseKey = process.env.VITE_SUPABASE_ANON_KEY || process.env.SUPABASE_ANON_KEY;
   const minConf = Number(req.query.min_confidence || 0.5);
   const limit = Math.min(Number(req.query.limit || 15), 40);
 
-  let games = await fetchGames(oddsKey);
+  let games = (await fetchGames()).map(normalizeForTools);
   if (!games.length && req.method === 'POST' && Array.isArray(req.body?.games)) games = req.body.games;
 
   const weights = await loadWeights(supabaseUrl, supabaseKey);

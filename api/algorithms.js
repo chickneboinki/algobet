@@ -1,3 +1,5 @@
+import { winChanceTool } from './_odds.js';
+
 function americanToProb(odds) {
   if (odds == null) return 0.5;
   return odds > 0 ? 100 / (odds + 100) : Math.abs(odds) / (Math.abs(odds) + 100);
@@ -157,6 +159,7 @@ function ncaaEngine(game) {
 }
 
 const ALGOS = {
+  'win-chance-v1': { id: 'win-chance-v1', name: 'Win Chance', description: 'Works out each team’s true win chance from both books, then looks for a price that pays more than that chance deserves.', created_by: 'system', tags: ['value', 'win-chance'], evaluate: winChanceTool },
   'nfl-engine-v1': { id: 'nfl-engine-v1', name: 'NFL Engine', description: 'Your evidence-style football tool. Needs a clear price or book disagreement before it picks.', created_by: 'user', tags: ['nfl', 'evidence'], evaluate: nflEngine },
   'ncaa-engine-v1': { id: 'ncaa-engine-v1', name: 'NCAA Engine', description: 'Your college tool for football and basketball. Passes when evidence is weak.', created_by: 'user', tags: ['ncaa'], evaluate: ncaaEngine },
   'soft-line-v1': { id: 'soft-line-v1', name: 'Soft Line', description: 'Compares FanDuel vs DraftKings. Picks the softer number when books disagree.', created_by: 'system', tags: ['arbitrage-style'], evaluate: softLine },
