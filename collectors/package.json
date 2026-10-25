@@ -1,0 +1,11 @@
+{
+  "name": "algobet-collectors",
+  "version": "1.0.0",
+  "private": true,
+  "type": "commonjs",
+  "scripts": {
+    "start": "node runner.js",
+    "once": "node runner.js --once",
+    "poll": "node runner.js --poll"
+  }
+}
