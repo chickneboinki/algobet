@@ -115,6 +115,11 @@ async function registerDiscordBot() {
       ],
     },
     {
+      name: 'wipeallchannel',
+      description: 'Admin: wipe messages in ALL channels set in /config (league + alerts + tracker + stats)',
+      ...admin,
+    },
+    {
       name: 'resetchannel',
       description: 'Admin: delete messages in a channel',
       ...admin,
@@ -188,7 +193,7 @@ async function registerDiscordBot() {
     endpoint,
     endpoint_set: patchRes.ok,
     endpoint_detail: patchRes.ok ? endpoint : patchJson,
-    note: 'Admin cmds need Manage Server. /send posts best picks by league + day range.',
+    note: 'Admin cmds need Manage Server. /send posts best picks by league + day range. /wipeallchannel clears all /config channels.',
   };
 }
 
