@@ -26,13 +26,13 @@ export default function BestBetsPage() {
   const [toast, setToast] = useState('')
   const [sending, setSending] = useState(false)
   const [showDays, setShowDays] = useState(false)
-  const [days, setDays] = useState<{ date: string; label: string; count: number; sports: string[] }[]>([])
+  const [days, setDays] = useState<{ date: string; label: string; count: number; sports: string[]; by_league?: Record<string, number> }[]>([])
   const [picked, setPicked] = useState<string[]>([])
   const [loadingDays, setLoadingDays] = useState(false)
 
   function showToast(msg: string) {
     setToast(msg)
-    setTimeout(() => setToast(''), 3200)
+    setTimeout(() => setToast(''), 4000)
   }
 
   async function load() {
@@ -60,7 +60,6 @@ export default function BestBetsPage() {
       const res = await api.betDays()
       const list = res.days || []
       setDays(list)
-      // preselect today + tomorrow if present
       setPicked(list.slice(0, 2).map((d: any) => d.date))
     } catch (e: any) {
       showToast(e.message || 'Could not load days')
@@ -96,7 +95,9 @@ export default function BestBetsPage() {
       setShowDays(false)
       showToast(
         r.ok
-          ? `Sending ${picked.length} day(s)… today ${r.today ?? '—'} · tomorrow ${r.tomorrow ?? '—'} cards`
+          ? r.sent
+            ? `Posted ${r.sent} pick(s) for ${(r.dates || picked).join(', ')}${r.leagues?.length ? ' → ' + r.leagues.join(', ') : ''}`
+            : r.message || `No picks on selected day(s)`
           : r.error || 'Sent'
       )
     } catch (e: any) {
@@ -162,7 +163,7 @@ export default function BestBetsPage() {
           <div className="card w-full max-w-md space-y-4 max-h-[85vh] overflow-y-auto">
             <div>
               <h3 className="text-lg font-semibold">Send which days?</h3>
-              <p className="hint text-xs mt-1">Only days that still have placeable bets (Central time).</p>
+              <p className="hint text-xs mt-1">Only the days you select will be sent (Central time). Only those games.</p>
             </div>
             {loadingDays ? (
               <p className="text-sm text-zinc-400">Loading days with lines…</p>
@@ -185,7 +186,14 @@ export default function BestBetsPage() {
                       <span className="font-medium">{d.label}</span>
                       <span className="text-xs text-zinc-400">{d.count} games</span>
                     </div>
-                    <p className="text-[11px] text-zinc-500 mt-0.5">{(d.sports || []).join(' · ')}</p>
+                    <p className="text-[11px] text-zinc-500 mt-0.5">
+                      {d.by_league && Object.keys(d.by_league).length
+                        ? Object.entries(d.by_league)
+                            .sort(([a], [b]) => a.localeCompare(b))
+                            .map(([L, n]) => `${L} ${n}`)
+                            .join(' · ')
+                        : (d.sports || []).join(' · ')}
+                    </p>
                   </button>
                 ))}
               </div>
