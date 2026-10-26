@@ -1,5 +1,4 @@
-/** Daily cron + health + Discord bot command registration.
- *  Hobby plan shares these on one function. */
+/** Daily cron + health + Discord bot command registration. */
 
 const LEAGUES = ['NFL', 'NBA', 'NCAAF', 'NCAAB', 'MLB', 'NHL'];
 
@@ -14,7 +13,6 @@ async function registerDiscordBot() {
     'Content-Type': 'application/json',
   };
 
-  // Resolve application id from the token (do not parse JWT manually)
   const meRes = await fetch('https://discord.com/api/v10/applications/@me', { headers });
   const meText = await meRes.text();
   if (!meRes.ok) return { ok: false, error: `applications/@me ${meRes.status}: ${meText.slice(0, 200)}` };
@@ -22,22 +20,24 @@ async function registerDiscordBot() {
   const appId = me.id;
   if (!appId) return { ok: false, error: 'No application id', me };
 
-  // Server-only commands. Admin cmds require Manage Server (permission bit 32).
+  const admin = { default_member_permissions: '32', dm_permission: false };
+  const channelOpt = {
+    type: 7,
+    name: 'channel',
+    description: 'Channel',
+    channel_types: [0, 5],
+  };
+  const roleOpt = (name, desc) => ({ type: 8, name, description: desc });
+
   const commands = [
     { name: 'login', description: 'Link your HelpBet website account to Discord', dm_permission: false },
     { name: 'logout', description: 'Unlink your HelpBet account', dm_permission: false },
     { name: 'mybets', description: 'Your bets from your linked HelpBet account', dm_permission: false },
-    {
-      name: 'config',
-      description: 'Admin: set league channels, tracker, stats and alerts',
-      default_member_permissions: '32',
-      dm_permission: false,
-    },
+    { name: 'config', description: 'Admin: set league channels, tracker, stats, alerts, roles panel', ...admin },
     {
       name: 'post',
-      description: 'Admin: post a league slate (next 3 days) to its channel',
-      default_member_permissions: '32',
-      dm_permission: false,
+      description: 'Admin: post a league slate (next 3 days)',
+      ...admin,
       options: [
         {
           type: 3,
@@ -46,21 +46,52 @@ async function registerDiscordBot() {
           required: true,
           choices: LEAGUES.map((l) => ({ name: l, value: l })),
         },
-        {
-          type: 7,
-          name: 'channel',
-          description: 'Optional channel override',
-          channel_types: [0, 5],
-        },
+        { ...channelOpt, description: 'Optional channel override', required: false },
       ],
+    },
+    {
+      name: 'setroles',
+      description: 'Admin: set alert roles + role-panel channel, then post the panel',
+      ...admin,
+      options: [
+        roleOpt('nfl', 'NFL Alerts role'),
+        roleOpt('ncaaf', 'NCAAF Alerts role'),
+        roleOpt('ncaab', 'NCAAB Alerts role'),
+        roleOpt('nba', 'NBA Alerts role'),
+        roleOpt('nhl', 'NHL Alerts role'),
+        roleOpt('all', 'All Sports role'),
+        { ...channelOpt, name: 'panel', description: 'Channel for the role self-assign panel' },
+      ],
+    },
+    {
+      name: 'resetchannel',
+      description: 'Admin: delete messages in a channel',
+      ...admin,
+      options: [{ ...channelOpt, required: true }],
+    },
+    {
+      name: 'testalert',
+      description: 'Admin: send a sample LIVE GAME ALERT',
+      ...admin,
+      options: [{ ...channelOpt, description: 'Override alert channel' }],
+    },
+    {
+      name: 'testresult',
+      description: 'Admin: send a sample result tracker table',
+      ...admin,
+      options: [{ ...channelOpt, description: 'Override tracker channel' }],
+    },
+    {
+      name: 'teststat',
+      description: 'Admin: send a sample stat breakdown',
+      ...admin,
+      options: [{ ...channelOpt, description: 'Override stats channel' }],
     },
     {
       name: 'run',
       description: 'Run HelpBet tools on one game',
       dm_permission: false,
-      options: [
-        { type: 3, name: 'game', description: 'Pick a game', required: true, autocomplete: true },
-      ],
+      options: [{ type: 3, name: 'game', description: 'Pick a game', required: true, autocomplete: true }],
     },
   ];
 
@@ -81,16 +112,9 @@ async function registerDiscordBot() {
     putJson = putText;
   }
   if (!putRes.ok) {
-    return {
-      ok: false,
-      error: `commands PUT ${putRes.status}`,
-      detail: putJson,
-      appId,
-      guild: guild || null,
-    };
+    return { ok: false, error: `commands PUT ${putRes.status}`, detail: putJson, appId, guild: guild || null };
   }
 
-  // Point Discord at our interactions handler (rewrite exists for /api/discord-interactions)
   const endpoint = `${base}/api/discord-interactions`;
   const patchRes = await fetch('https://discord.com/api/v10/applications/@me', {
     method: 'PATCH',
@@ -113,7 +137,7 @@ async function registerDiscordBot() {
     endpoint,
     endpoint_set: patchRes.ok,
     endpoint_detail: patchRes.ok ? endpoint : patchJson,
-    note: 'Commands are guild-only (no DMs). /config and /post require Manage Server.',
+    note: 'Admin cmds need Manage Server. Role panel uses buttons from /setroles.',
   };
 }
 
@@ -136,7 +160,6 @@ export default async function handler(req, res) {
     });
   }
 
-  // Bring Discord slash commands online (restricted)
   if (route === 'bot-register' || route === 'register-bot') {
     try {
       const result = await registerDiscordBot();
