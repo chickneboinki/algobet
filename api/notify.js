@@ -7,13 +7,20 @@ let _mod;
 async function load() {
   if (_mod) return _mod;
   const dir = dirname(fileURLToPath(import.meta.url));
-  let b64;
-  try {
-    b64 = readFileSync(join(dir, 'notify-body.b64'), 'utf8').trim();
-  } catch {
-    b64 = readFileSync(join(process.cwd(), 'api', 'notify-body.b64'), 'utf8').trim();
+  const parts = [];
+  for (let i = 0; i < 8; i++) {
+    try {
+      parts.push(readFileSync(join(dir, `notify-p${i}.b64`), 'utf8').trim());
+    } catch {
+      try {
+        parts.push(readFileSync(join(process.cwd(), 'api', `notify-p${i}.b64`), 'utf8').trim());
+      } catch {
+        break;
+      }
+    }
   }
-  const code = gunzipSync(Buffer.from(b64, 'base64')).toString('utf8');
+  if (!parts.length) throw new Error('notify body parts missing');
+  const code = gunzipSync(Buffer.from(parts.join(''), 'base64')).toString('utf8');
   const dataUrl = 'data:text/javascript;base64,' + Buffer.from(code, 'utf8').toString('base64');
   _mod = await import(dataUrl);
   return _mod;
