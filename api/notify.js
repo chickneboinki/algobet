@@ -98,14 +98,30 @@ async function postRolePanel(cfg) {
 }
 async function clearChannelMessages(channelId) {
   let deleted = 0;
-  for (let pass = 0; pass < 5; pass++) {
-    const list = await botApi('GET', `/channels/${channelId}/messages?limit=100`);
+  for (let pass = 0; pass < 2; pass++) {
+    let list;
+    try {
+      list = await botApi('GET', `/channels/${channelId}/messages?limit=100`);
+    } catch (e) {
+      break;
+    }
     if (!Array.isArray(list) || !list.length) break;
-    const bulk = list.filter((m) => Date.now() - new Date(m.timestamp).getTime() < 13.9*24*3600e3).map((m) => m.id);
-    if (bulk.length >= 2) { await botApi('POST', `/channels/${channelId}/messages/bulk-delete`, { messages: bulk }); deleted += bulk.length; }
-    else if (bulk.length === 1) { await botApi('DELETE', `/channels/${channelId}/messages/${bulk[0]}`); deleted += 1; }
+    const bulk = list
+      .filter((m) => Date.now() - new Date(m.timestamp).getTime() < 13.9 * 24 * 3600e3)
+      .map((m) => m.id);
+    try {
+      if (bulk.length >= 2) {
+        await botApi('POST', `/channels/${channelId}/messages/bulk-delete`, { messages: bulk.slice(0, 100) });
+        deleted += bulk.length;
+      } else if (bulk.length === 1) {
+        await botApi('DELETE', `/channels/${channelId}/messages/${bulk[0]}`);
+        deleted += 1;
+      }
+    } catch (e) {
+      break;
+    }
     if (list.length < 100) break;
-    await sleep(400);
+    await sleep(250);
   }
   return deleted;
 }
@@ -167,12 +183,7 @@ function pickDayKey(p) {
 }
 async function fetchPicksForSend(league, startOff, endOff, dateList) {
   const base = process.env.APP_URL || 'https://helpbet.vercel.app';
-  const r = await fetch(`${base}/api/best-bets?min_confidence=0.45&limit=120`);
-  const data = await r.json().catch(() => ({}));
-  let picks = Array.isArray(data.picks) ? data.picks : [];
-  if (league && league !== 'ALL') picks = picks.filter((p) => String(p.sport||'').toUpperCase() === league);
   const now = new Date();
-  const cutoff = Date.now() - 2 * 3600e3;
   let allowed = null;
   let rangeStart = null, rangeEnd = null;
   if (Array.isArray(dateList) && dateList.length) {
@@ -181,14 +192,68 @@ async function fetchPicksForSend(league, startOff, endOff, dateList) {
     rangeStart = ctDayKey(addDaysCT(now, startOff));
     rangeEnd = ctDayKey(addDaysCT(now, endOff));
   }
-  return picks.filter((p) => {
+  const inRange = (p) => {
     const k = pickDayKey(p);
     if (!k) return false;
     if (allowed) return allowed.has(k);
-    if (k < rangeStart || k > rangeEnd) return false;
-    if (k === ctDayKey(now) && p.start_time && new Date(p.start_time).getTime() < cutoff && !p.live) return false;
-    return true;
-  });
+    return k >= rangeStart && k <= rangeEnd;
+  };
+
+  const r = await fetch(`${base}/api/best-bets?min_confidence=0.30&limit=250`);
+  const data = await r.json().catch(() => ({}));
+  let picks = (Array.isArray(data.picks) ? data.picks : []).filter(inRange);
+  if (league && league !== 'ALL') picks = picks.filter((p) => String(p.sport || '').toUpperCase() === league);
+
+  try {
+    const dateQ = allowed ? [...allowed].join(',') : '';
+    const gUrl = dateQ
+      ? `${base}/api/games?sport=ALL&dates=${encodeURIComponent(dateQ)}`
+      : `${base}/api/games?sport=ALL`;
+    const gr = await fetch(gUrl);
+    const gd = await gr.json().catch(() => ({}));
+    const games = Array.isArray(gd.games) ? gd.games : [];
+    const seen = new Set(picks.map((p) => `${String(p.sport || '').toUpperCase()}|${p.home_team}|${p.away_team}`));
+    for (const g of games) {
+      if (!inRange(g)) continue;
+      const sport = String(g.sport || '').toUpperCase();
+      if (league && league !== 'ALL' && sport !== league) continue;
+      const key = `${sport}|${g.home_team}|${g.away_team}`;
+      if (seen.has(key)) continue;
+      const odds = g.odds || {};
+      const mlH = odds.ml_home, mlA = odds.ml_away;
+      if (mlH == null && mlA == null) continue;
+      let side = 'home', conf = 0.52;
+      if (mlH != null && mlA != null) {
+        if (mlA > mlH) { side = 'away'; conf = 0.55; }
+        else { side = 'home'; conf = 0.55; }
+      } else if (mlA != null) side = 'away';
+      picks.push({
+        game_id: g.id,
+        sport,
+        home_team: g.home_team,
+        away_team: g.away_team,
+        start_time: g.start_time || g.commence_time,
+        recommended_side: side,
+        confidence: conf,
+        expected_value: 0.02,
+        algorithm_name: 'Board lean',
+        reasoning: 'Live board lean from available moneyline (not full AI rank).',
+        odds,
+        links: g.links,
+      });
+      seen.add(key);
+    }
+  } catch {}
+
+  const uniq = [];
+  const u = new Set();
+  for (const p of picks) {
+    const id = `${String(p.sport||'').toUpperCase()}|${p.home_team}|${p.away_team}|${p.recommended_side}`;
+    if (u.has(id)) continue;
+    u.add(id);
+    uniq.push(p);
+  }
+  return uniq;
 }
 async function runSendCommand(it, guildId, opt) {
   const league = String(opt('league') || 'ALL').toUpperCase();
@@ -220,11 +285,11 @@ async function runSendCommand(it, guildId, opt) {
     if (!channel) { await follow(`Skip **${L}**: set channel in /config`); continue; }
     await sendChannel(channel, { embeds: [{ title: `═══ ${L} ═══`, description: `**${list.length}** pick(s) · days **${startOff}** to **${endOff}**`, color: LEAGUE_COLORS[L]||LEAGUE_COLORS.DEFAULT }] });
     await sleep(400);
-    for (const p of list.slice(0, 25)) { await sendChannel(channel, pickEmbed(p)); sent += 1; await sleep(1200); }
+    for (const p of list.slice(0, 15)) { await sendChannel(channel, pickEmbed(p)); sent += 1; await sleep(1100); }
     await sendChannel(channel, { embeds: [{ title: `End of ${L}`, description: `All **${L}** picks for this range.`, color: LEAGUE_COLORS[L]||LEAGUE_COLORS.DEFAULT }] });
-    await sleep(500);
+    await sleep(400);
   }
-  await follow(`Done. Posted **${sent}** pick(s) for **${league}** (days ${startOff}→${endOff}).`);
+  await follow(`Done. Posted **${sent}** pick(s) for **${league}** (days ${startOff}→${endOff}) · leagues: ${Object.keys(byLeague).join(', ')}`);
 }
 
 async function handleBotInteraction(it, res) {
@@ -280,17 +345,30 @@ async function handleBotInteraction(it, res) {
   if (name === 'wipeallchannel') {
     if (!isAdmin(it)) return res.status(200).json(text('Manage Server required.'));
     res.status(200).json({ type: 5 });
+    const follow = async (content) => {
+      try {
+        await botApi('POST', `/webhooks/${it.application_id}/${it.token}/messages/@original`, { content: String(content).slice(0, 1900) });
+      } catch (e) {
+        try {
+          await botApi('POST', `/webhooks/${it.application_id}/${it.token}`, { content: String(content).slice(0, 1900) });
+        } catch {}
+      }
+    };
     try {
       const cfg = await loadCfg(guildId);
-      const ids = new Set();
+      const ids = [];
       for (const [k, v] of Object.entries(cfg || {})) {
         if (!v) continue;
-        if (k.startsWith('ch_') || k === 'alerts' || k === 'tracker' || k === 'stats' || k === 'roles_panel') ids.add(String(v));
+        if (k.startsWith('ch_') || k === 'alerts' || k === 'tracker' || k === 'stats' || k === 'roles_panel') {
+          const id = String(v);
+          if (!ids.includes(id)) ids.push(id);
+        }
       }
-      if (!ids.size) {
-        await botApi('POST', `/webhooks/${it.application_id}/${it.token}/messages/@original`, { content: 'No channels in /config to wipe.' });
+      if (!ids.length) {
+        await follow('No channels set in /config to wipe.');
         return;
       }
+      await follow(`Wiping **${ids.length}** channel(s) from /config…`);
       let total = 0;
       const lines = [];
       for (const id of ids) {
@@ -299,15 +377,13 @@ async function handleBotInteraction(it, res) {
           total += nDel;
           lines.push(`<#${id}> ~${nDel}`);
         } catch (e) {
-          lines.push(`<#${id}> fail: ${e.message}`);
+          lines.push(`<#${id}> fail: ${(e.message || e).toString().slice(0, 80)}`);
         }
-        await sleep(500);
+        await sleep(300);
       }
-      await botApi('POST', `/webhooks/${it.application_id}/${it.token}/messages/@original`, {
-        content: `Wiped **${ids.size}** configured channel(s) · ~**${total}** messages.\n${lines.join('\n')}`.slice(0, 1900),
-      });
+      await follow(`Done. Wiped **${ids.length}** channel(s) · ~**${total}** messages.\n${lines.join('\n')}`);
     } catch (e) {
-      try { await botApi('POST', `/webhooks/${it.application_id}/${it.token}/messages/@original`, { content: `Wipe failed: ${e.message||e}` }); } catch {}
+      await follow(`Wipe failed: ${e.message || e}`);
     }
     return;
   }
@@ -493,7 +569,7 @@ export default async function handler(req, res) {
             allowed_mentions: roleId ? { roles: [roleId] } : { parse: [] },
           });
           await sleep(400);
-          for (const p of list.slice(0, 20)) {
+          for (const p of list.slice(0, 15)) {
             await sendChannel(channel, pickEmbed(p));
             sent += 1;
             await sleep(1100);
