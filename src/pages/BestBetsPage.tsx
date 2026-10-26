@@ -1,6 +1,8 @@
 import { useEffect, useState } from 'react'
 import { api } from '../services/api'
 import { confidenceWord, confidenceColor } from '../lib/algoInfo'
+import { loadSession } from '../lib/auth'
+import { loadLocalWebhook } from '../lib/webhook'
 
 const SPORTS = ['ALL', 'NFL', 'NCAAF', 'NCAAB', 'NBA', 'MLB', 'NHL']
 
@@ -23,10 +25,14 @@ export default function BestBetsPage() {
   const [sport, setSport] = useState('ALL')
   const [toast, setToast] = useState('')
   const [sending, setSending] = useState(false)
+  const [showDays, setShowDays] = useState(false)
+  const [days, setDays] = useState<{ date: string; label: string; count: number; sports: string[] }[]>([])
+  const [picked, setPicked] = useState<string[]>([])
+  const [loadingDays, setLoadingDays] = useState(false)
 
   function showToast(msg: string) {
     setToast(msg)
-    setTimeout(() => setToast(''), 2800)
+    setTimeout(() => setToast(''), 3200)
   }
 
   async function load() {
@@ -45,6 +51,60 @@ export default function BestBetsPage() {
   useEffect(() => {
     load()
   }, [])
+
+  async function openSendModal() {
+    setShowDays(true)
+    setLoadingDays(true)
+    setPicked([])
+    try {
+      const res = await api.betDays()
+      const list = res.days || []
+      setDays(list)
+      // preselect today + tomorrow if present
+      setPicked(list.slice(0, 2).map((d: any) => d.date))
+    } catch (e: any) {
+      showToast(e.message || 'Could not load days')
+      setDays([])
+    } finally {
+      setLoadingDays(false)
+    }
+  }
+
+  function toggleDay(date: string) {
+    setPicked((prev) => (prev.includes(date) ? prev.filter((x) => x !== date) : [...prev, date]))
+  }
+
+  async function confirmSend() {
+    if (!picked.length) {
+      showToast('Pick at least one day')
+      return
+    }
+    const webhook = loadLocalWebhook()
+    const session = loadSession()
+    if (!webhook && !session) {
+      showToast('Save your Discord webhook in Setup first')
+      return
+    }
+    setSending(true)
+    try {
+      const r = await api.notifyDiscord({
+        title: 'HelpBet · Selected days',
+        dates: picked,
+        webhook_url: webhook || undefined,
+        username: session?.username,
+      })
+      setShowDays(false)
+      showToast(
+        r.ok
+          ? `Sending ${picked.length} day(s)… today ${r.today ?? '—'} · tomorrow ${r.tomorrow ?? '—'} cards`
+          : r.error || 'Sent'
+      )
+    } catch (e: any) {
+      showToast(e.message || 'Send failed — check Setup webhook')
+    } finally {
+      setSending(false)
+    }
+  }
 
   async function track(p: any) {
     setTracking(p.game_id + p.algorithm_id)
@@ -77,21 +137,6 @@ export default function BestBetsPage() {
     }
   }
 
-  async function sendToChannel() {
-    setSending(true)
-    try {
-      const r = await api.notifyDiscord({
-        title: 'HelpBet · Best picks now',
-        content: 'Manual send from the app',
-      })
-      showToast(r.ok ? `Sent ${r.embeds_sent || ''} embeds to Discord` : r.error || 'Sent')
-    } catch (e: any) {
-      showToast(e.message || 'Send failed — set Discord webhook in Setup')
-    } finally {
-      setSending(false)
-    }
-  }
-
   const picks = (data?.picks || []).filter((p: any) => {
     if (sport === 'ALL') return true
     return String(p.sport || '').toUpperCase() === sport
@@ -108,6 +153,60 @@ export default function BestBetsPage() {
 
   return (
     <div className="space-y-4 pb-8">
+      {toast && (
+        <div className="fixed top-14 left-4 right-4 z-50 card text-sm text-sky-300 shadow-lg">{toast}</div>
+      )}
+
+      {showDays && (
+        <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-black/70 p-4">
+          <div className="card w-full max-w-md space-y-4 max-h-[85vh] overflow-y-auto">
+            <div>
+              <h3 className="text-lg font-semibold">Send which days?</h3>
+              <p className="hint text-xs mt-1">Only days that still have placeable bets (Central time).</p>
+            </div>
+            {loadingDays ? (
+              <p className="text-sm text-zinc-400">Loading days with lines…</p>
+            ) : days.length === 0 ? (
+              <p className="text-sm text-zinc-400">No upcoming days with lines right now. Refresh later.</p>
+            ) : (
+              <div className="space-y-2">
+                {days.map((d) => (
+                  <button
+                    key={d.date}
+                    type="button"
+                    onClick={() => toggleDay(d.date)}
+                    className={`w-full text-left rounded-xl border px-3 py-3 ${
+                      picked.includes(d.date)
+                        ? 'border-sky-400 bg-sky-400/10'
+                        : 'border-white/10 bg-black/30'
+                    }`}
+                  >
+                    <div className="flex justify-between items-center">
+                      <span className="font-medium">{d.label}</span>
+                      <span className="text-xs text-zinc-400">{d.count} games</span>
+                    </div>
+                    <p className="text-[11px] text-zinc-500 mt-0.5">{(d.sports || []).join(' · ')}</p>
+                  </button>
+                ))}
+              </div>
+            )}
+            <div className="flex gap-2">
+              <button type="button" className="btn-ghost flex-1" onClick={() => setShowDays(false)}>
+                Cancel
+              </button>
+              <button
+                type="button"
+                className="btn-primary flex-1"
+                disabled={sending || !picked.length}
+                onClick={confirmSend}
+              >
+                {sending ? 'Sending…' : `Send ${picked.length || ''} day(s)`}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       <div className="flex items-start justify-between gap-3">
         <div>
           <h2 className="page-title">Best picks</h2>
@@ -120,29 +219,29 @@ export default function BestBetsPage() {
           <button type="button" className="btn-ghost" onClick={load}>
             Refresh
           </button>
-          <button type="button" className="btn-primary text-sm" disabled={sending} onClick={sendToChannel}>
-            {sending ? 'Sending…' : 'Send to channel'}
+          <button type="button" className="btn-primary" onClick={openSendModal}>
+            Send to channel
           </button>
         </div>
       </div>
 
-      {toast && <div className="toast">{toast}</div>}
+      {error && <div className="card text-sm text-amber-300">{error}</div>}
 
-      <div className="flex gap-2 overflow-x-auto pb-1 no-scrollbar -mx-4 px-4">
+      <div className="flex gap-2 overflow-x-auto pb-1">
         {SPORTS.map((s) => (
-          <button key={s} type="button" onClick={() => setSport(s)} className={`chip ${sport === s ? 'chip-on' : 'chip-off'}`}>
-            {s === 'ALL' ? 'All' : s}
+          <button
+            key={s}
+            type="button"
+            className={`chip ${sport === s ? 'chip-on' : 'chip-off'}`}
+            onClick={() => setSport(s)}
+          >
+            {s}
           </button>
         ))}
       </div>
 
-      {error && <div className="card border-red-500/30 text-red-300 text-sm">{error}</div>}
-
-      {!error && picks.length === 0 && (
-        <div className="card">
-          <p className="font-medium">No strong picks{sport !== 'ALL' ? ` for ${sport}` : ''} right now</p>
-          <p className="hint mt-1">Try another league, or open Games and check a matchup yourself.</p>
-        </div>
+      {picks.length === 0 && (
+        <div className="card text-sm text-zinc-400">No strong picks for this filter yet.</div>
       )}
 
       {picks.map((p: any, i: number) => {
@@ -185,7 +284,9 @@ export default function BestBetsPage() {
             <div className="grid grid-cols-2 gap-2">
               <div className="stat-box">
                 <p className="label">Confidence</p>
-                <p className={`text-base font-semibold mt-1 ${confidenceColor(p.confidence)}`}>{confidenceWord(p.confidence)}</p>
+                <p className={`text-base font-semibold mt-1 ${confidenceColor(p.confidence)}`}>
+                  {confidenceWord(p.confidence)}
+                </p>
               </div>
               <div className="stat-box">
                 <p className="label">Value edge</p>

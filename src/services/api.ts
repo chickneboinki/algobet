@@ -2,12 +2,20 @@ import { supabase } from './supabase'
 import { loadSession } from '../lib/auth'
 
 async function req<T>(path: string, options?: RequestInit): Promise<T> {
-  const res = await fetch(`/api${path}`, {
-    headers: { 'Content-Type': 'application/json', ...(options?.headers || {}) },
-    ...options,
-  })
-  if (!res.ok) throw new Error(await res.text().catch(() => res.statusText))
-  return res.json()
+  const headers: Record<string, string> = {
+    'Content-Type': 'application/json',
+    ...((options?.headers as Record<string, string>) || {}),
+  }
+  const res = await fetch(`/api${path}`, { ...options, headers })
+  const text = await res.text()
+  let data: any = {}
+  try {
+    data = text ? JSON.parse(text) : {}
+  } catch {
+    data = { error: text }
+  }
+  if (!res.ok) throw new Error(data.error || text || res.statusText)
+  return data as T
 }
 
 function authHeaders(): Record<string, string> {
@@ -18,7 +26,9 @@ function authHeaders(): Record<string, string> {
 
 export const api = {
   health: () => req<any>('/health'),
-  games: (sport?: string) => req<{ source: string; games: any[]; note?: string }>(`/games${sport ? `?sport=${sport}` : ''}`),
+  games: (sport?: string) =>
+    req<{ source: string; games: any[]; note?: string }>(`/games${sport ? `?sport=${sport}` : ''}`),
+  betDays: () => req<{ days: any[]; timezone: string }>('/games?days=1'),
   algorithms: () => req<any[]>('/algorithms'),
   runAlgo: (algorithm_id: string, game: any) =>
     req<any>('/algorithms', { method: 'POST', body: JSON.stringify({ algorithm_id, game }) }),
@@ -31,23 +41,45 @@ export const api = {
     return req<any>(`/best-bets${s ? `?${s}` : ''}`)
   },
   autoSettle: () => req<any>('/settle', { method: 'POST', body: '{}' }),
-  notifyDiscord: (opts?: { webhook_url?: string; title?: string; content?: string; leagues?: string[]; username?: string }) => {
+  notifyDiscord: (opts?: {
+    webhook_url?: string
+    title?: string
+    content?: string
+    leagues?: string[]
+    username?: string
+    dates?: string[]
+  }) => {
     const session = loadSession()
     return req<any>('/notify', {
       method: 'POST',
       body: JSON.stringify({
         ...opts,
         username: opts?.username || session?.username,
+        token: session?.token,
       }),
     })
   },
-  userSettings: () => req<any>('/user-settings', { headers: authHeaders() }),
-  saveUserSettings: (patch: any) =>
-    req<any>('/user-settings', {
+  userSettings: () => {
+    const session = loadSession()
+    return req<any>('/user-settings', {
+      headers: authHeaders(),
+      method: 'GET',
+    }).catch(async (e) => {
+      // retry with token in query if header stripped
+      if (session?.token) {
+        return req<any>(`/user-settings?token=${encodeURIComponent(session.token)}`)
+      }
+      throw e
+    })
+  },
+  saveUserSettings: (patch: any) => {
+    const session = loadSession()
+    return req<any>('/user-settings', {
       method: 'POST',
       headers: authHeaders(),
-      body: JSON.stringify(patch),
-    }),
+      body: JSON.stringify({ ...patch, token: session?.token }),
+    })
+  },
   teamStats: (team: string, sport = 'NBA') =>
     req<any>(`/stats?team=${encodeURIComponent(team)}&sport=${encodeURIComponent(sport)}`),
   playerProps: (opts: { sport: string; eventId?: string; home?: string; away?: string }) => {
@@ -103,16 +135,7 @@ export const api = {
     if (!primary.status) primary.status = 'pending'
     if (!primary.placed_at) primary.placed_at = new Date().toISOString()
     if (primary.stake_units == null) primary.stake_units = 1
-
-    let { data, error } = await supabase.from('bets').insert(primary).select().single()
-    if (error && /column|schema cache/i.test(error.message || '')) {
-      const minimal = { ...primary }
-      delete minimal.notes
-      delete minimal.odds_taken
-      const retry = await supabase.from('bets').insert(minimal).select().single()
-      data = retry.data
-      error = retry.error
-    }
+    const { data, error } = await supabase.from('bets').insert(primary).select().single()
     if (error) throw error
     return data
   },
@@ -126,7 +149,6 @@ export const api = {
     if (error) throw error
   },
   async settings() {
-    // prefer per-user; fall back to empty
     try {
       return await this.userSettings()
     } catch {
