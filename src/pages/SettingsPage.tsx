@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { api } from '../services/api'
 import { loadSession, saveSession, authRequest } from '../lib/auth'
+import { loadLocalWebhook, saveLocalWebhook } from '../lib/webhook'
 
 const ALL_LEAGUES = ['NFL', 'NCAAF', 'NCAAB', 'NBA', 'MLB', 'NHL']
 
@@ -9,7 +10,7 @@ export default function SettingsPage() {
   const [msg, setMsg] = useState('')
   const [testing, setTesting] = useState(false)
   const [mode, setMode] = useState<'single' | 'per_league'>('single')
-  const [defaultWebhook, setDefaultWebhook] = useState('')
+  const [defaultWebhook, setDefaultWebhook] = useState(() => loadLocalWebhook())
   const [leagueHooks, setLeagueHooks] = useState<Record<string, string>>({})
   const [multiOpen, setMultiOpen] = useState(false)
   const [leagues, setLeagues] = useState<string[]>([...ALL_LEAGUES])
@@ -20,6 +21,10 @@ export default function SettingsPage() {
   const [authBusy, setAuthBusy] = useState(false)
 
   const loadSettings = async () => {
+    // Always restore local backup first so the field never looks empty after refresh
+    const local = loadLocalWebhook()
+    if (local) setDefaultWebhook(local)
+
     if (!loadSession()) return
     try {
       const s = await api.userSettings()
@@ -28,12 +33,16 @@ export default function SettingsPage() {
         setMode('per_league')
         setMultiOpen(true)
       }
-      setDefaultWebhook(s?.discord_webhook || cfg.default_webhook || '')
+      const fromAccount = s?.discord_webhook || cfg.default_webhook || ''
+      if (fromAccount) {
+        setDefaultWebhook(fromAccount)
+        saveLocalWebhook(fromAccount)
+      }
       setLeagueHooks(cfg.league_webhooks || {})
       if (Array.isArray(cfg.auto_post_leagues) && cfg.auto_post_leagues.length) setLeagues(cfg.auto_post_leagues)
       if (cfg.auto_post_hour_ct != null) setHourCt(Number(cfg.auto_post_hour_ct))
     } catch (e: any) {
-      setMsg(e.message || 'Could not load your settings')
+      setMsg(e.message || 'Could not load account settings — local webhook still kept')
     }
   }
 
@@ -46,26 +55,31 @@ export default function SettingsPage() {
   }
 
   const saveNotify = async () => {
+    setMsg('')
+    const wh = defaultWebhook.trim()
+    saveLocalWebhook(wh)
+
     if (!loadSession()) {
-      setMsg('Create an account or log in first — settings are per person.')
+      setMsg(wh ? 'Webhook saved on this phone. Log in to also save it to your account.' : 'Cleared local webhook')
       return
     }
-    setMsg('')
+
     const notify_config = {
       mode,
-      default_webhook: defaultWebhook.trim(),
+      default_webhook: wh,
       league_webhooks: mode === 'per_league' ? leagueHooks : {},
       auto_post_leagues: leagues,
       auto_post_hour_ct: hourCt,
     }
     try {
-      await api.saveUserSettings({
-        discord_webhook: defaultWebhook.trim() || null,
+      const saved = await api.saveUserSettings({
+        discord_webhook: wh || null,
         notify_config,
       })
-      setMsg('Saved to YOUR account only.')
+      if (saved?.discord_webhook) setDefaultWebhook(saved.discord_webhook)
+      setMsg('Saved on this phone and to your account.')
     } catch (e: any) {
-      setMsg(e.message || 'Save failed')
+      setMsg((e.message || 'Account save failed') + ' — kept on this phone anyway.')
     }
   }
 
@@ -81,32 +95,30 @@ export default function SettingsPage() {
       setMsg('Paste your Discord webhook above first, then Save, then Send.')
       return
     }
+    saveLocalWebhook(wh)
     setTesting(true)
     setMsg('')
     try {
-      // Always save first so the account keeps the webhook
       if (loadSession()) {
-        await api.saveUserSettings({
-          discord_webhook: wh,
-          notify_config: {
-            mode,
-            default_webhook: wh,
-            league_webhooks: mode === 'per_league' ? leagueHooks : {},
-            auto_post_leagues: leagues,
-            auto_post_hour_ct: hourCt,
-          },
-        })
+        try {
+          await api.saveUserSettings({
+            discord_webhook: wh,
+            notify_config: {
+              mode,
+              default_webhook: wh,
+              league_webhooks: mode === 'per_league' ? leagueHooks : {},
+              auto_post_leagues: leagues,
+              auto_post_hour_ct: hourCt,
+            },
+          })
+        } catch {}
       }
       const r = await api.notifyDiscord({
-        title: 'HelpBet · All bets for today',
+        title: 'HelpBet · All bets',
         leagues,
         webhook_url: wh,
       })
-      setMsg(
-        r.ok
-          ? `Posted ${r.cards ?? 0} game cards (colors + buttons). Scroll Discord for DIFFERENT LEAGUE banners and THIS IS ALL BETS FOR TODAY.`
-          : r.error || 'Done'
-      )
+      setMsg(r.ok ? `Posted — today ${r.today ?? 0} · tomorrow ${r.tomorrow ?? 0} cards` : r.error || 'Done')
     } catch (e: any) {
       setMsg(e.message || 'Test failed')
     } finally {
@@ -124,7 +136,7 @@ export default function SettingsPage() {
       setSession(s)
       setMsg(
         action === 'register'
-          ? 'Account created. Paste your webhook below → Save → Send all today.'
+          ? 'Account created. Paste webhook → Save.'
           : 'Logged in'
       )
       setAuthPass('')
@@ -138,8 +150,8 @@ export default function SettingsPage() {
   const logout = () => {
     saveSession(null)
     setSession(null)
-    setDefaultWebhook('')
-    setMsg('Logged out')
+    // keep webhook on phone
+    setMsg('Logged out (webhook stays on this phone)')
   }
 
   return (
@@ -191,10 +203,13 @@ export default function SettingsPage() {
 
       <div className="card space-y-3">
         <h3 className="font-semibold">Your Discord webhook</h3>
-        <p className="hint text-xs">Required for Send. Blank on new accounts.</p>
+        <p className="hint text-xs">Saved on this phone always. Also saved to account when logged in.</p>
         <input
           value={defaultWebhook}
-          onChange={(e) => setDefaultWebhook(e.target.value)}
+          onChange={(e) => {
+            setDefaultWebhook(e.target.value)
+            saveLocalWebhook(e.target.value.trim())
+          }}
           placeholder="https://discord.com/api/webhooks/..."
           className="w-full bg-black/40 border border-white/10 rounded-xl px-3 py-2.5 text-xs"
         />
@@ -231,7 +246,7 @@ export default function SettingsPage() {
 
       <div className="card space-y-3">
         <h3 className="font-semibold">Auto-post</h3>
-        <p className="hint text-xs">Daily ~6 AM CT · league colors · FanDuel / DK / PrizePicks buttons.</p>
+        <p className="hint text-xs">Daily ~6 AM CT · league colors · book buttons.</p>
         <label className="block text-sm">
           <span className="text-zinc-400">Preferred hour (Central)</span>
           <input
@@ -253,7 +268,7 @@ export default function SettingsPage() {
       </div>
 
       <div className="flex gap-2">
-        <button type="button" className="btn-primary flex-1" onClick={saveNotify} disabled={!session}>
+        <button type="button" className="btn-primary flex-1" onClick={saveNotify}>
           Save settings
         </button>
         <button type="button" className="btn-ghost flex-1" disabled={testing} onClick={testSend}>
