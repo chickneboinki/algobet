@@ -160,21 +160,34 @@ function pickEmbed(p) {
     ]}],
   };
 }
-async function fetchPicksForSend(league, startOff, endOff) {
+function pickDayKey(p) {
+  const iso = p.start_time || p.commence_time;
+  if (!iso) return null;
+  return ctDayKey(new Date(iso));
+}
+async function fetchPicksForSend(league, startOff, endOff, dateList) {
   const base = process.env.APP_URL || 'https://helpbet.vercel.app';
-  const r = await fetch(`${base}/api/best-bets?min_confidence=0.45&limit=80`);
+  const r = await fetch(`${base}/api/best-bets?min_confidence=0.45&limit=120`);
   const data = await r.json().catch(() => ({}));
   let picks = Array.isArray(data.picks) ? data.picks : [];
   if (league && league !== 'ALL') picks = picks.filter((p) => String(p.sport||'').toUpperCase() === league);
   const now = new Date();
-  const startKey = ctDayKey(addDaysCT(now, startOff));
-  const endKey = ctDayKey(addDaysCT(now, endOff));
-  const cutoff = Date.now() - 3 * 3600e3;
+  const cutoff = Date.now() - 2 * 3600e3;
+  let allowed = null;
+  let rangeStart = null, rangeEnd = null;
+  if (Array.isArray(dateList) && dateList.length) {
+    allowed = new Set(dateList.map((d) => String(d).trim()).filter(Boolean));
+  } else {
+    rangeStart = ctDayKey(addDaysCT(now, startOff));
+    rangeEnd = ctDayKey(addDaysCT(now, endOff));
+  }
   return picks.filter((p) => {
-    if (!p.start_time) return false;
-    const k = ctDayKey(new Date(p.start_time));
-    if (k < startKey || k > endKey) return false;
-    return new Date(p.start_time).getTime() > cutoff || k > ctDayKey(now);
+    const k = pickDayKey(p);
+    if (!k) return false;
+    if (allowed) return allowed.has(k);
+    if (k < rangeStart || k > rangeEnd) return false;
+    if (k === ctDayKey(now) && p.start_time && new Date(p.start_time).getTime() < cutoff && !p.live) return false;
+    return true;
   });
 }
 async function runSendCommand(it, guildId, opt) {
@@ -193,7 +206,7 @@ async function runSendCommand(it, guildId, opt) {
   startOff = Math.max(-7, Math.min(30, startOff));
   endOff = Math.max(startOff, Math.min(30, endOff));
   const cfg = await loadCfg(guildId);
-  const picks = await fetchPicksForSend(league, startOff, endOff);
+  const picks = await fetchPicksForSend(league, startOff, endOff, null);
   const follow = async (content) => { await botApi('POST', `/webhooks/${it.application_id}/${it.token}/messages/@original`, { content }); };
   if (!picks.length) { await follow(`No picks for **${league}** days ${startOff}→${endOff} (0=today CT).`); return; }
   const byLeague = {};
@@ -263,6 +276,40 @@ async function handleBotInteraction(it, res) {
     if (!channel) return res.status(200).json(text('Pick a channel.'));
     try { const n = await clearChannelMessages(channel); return res.status(200).json(text(`Cleared ~**${n}** messages in <#${channel}>.`)); }
     catch (e) { return res.status(200).json(text(`Failed: ${e.message}`)); }
+  }
+  if (name === 'wipeallchannel') {
+    if (!isAdmin(it)) return res.status(200).json(text('Manage Server required.'));
+    res.status(200).json({ type: 5 });
+    try {
+      const cfg = await loadCfg(guildId);
+      const ids = new Set();
+      for (const [k, v] of Object.entries(cfg || {})) {
+        if (!v) continue;
+        if (k.startsWith('ch_') || k === 'alerts' || k === 'tracker' || k === 'stats' || k === 'roles_panel') ids.add(String(v));
+      }
+      if (!ids.size) {
+        await botApi('POST', `/webhooks/${it.application_id}/${it.token}/messages/@original`, { content: 'No channels in /config to wipe.' });
+        return;
+      }
+      let total = 0;
+      const lines = [];
+      for (const id of ids) {
+        try {
+          const nDel = await clearChannelMessages(id);
+          total += nDel;
+          lines.push(`<#${id}> ~${nDel}`);
+        } catch (e) {
+          lines.push(`<#${id}> fail: ${e.message}`);
+        }
+        await sleep(500);
+      }
+      await botApi('POST', `/webhooks/${it.application_id}/${it.token}/messages/@original`, {
+        content: `Wiped **${ids.size}** configured channel(s) · ~**${total}** messages.\n${lines.join('\n')}`.slice(0, 1900),
+      });
+    } catch (e) {
+      try { await botApi('POST', `/webhooks/${it.application_id}/${it.token}/messages/@original`, { content: `Wipe failed: ${e.message||e}` }); } catch {}
+    }
+    return;
   }
   if (name === 'testalert') {
     if (!isAdmin(it)) return res.status(200).json(text('Manage Server required.'));
@@ -400,43 +447,65 @@ export default async function handler(req, res) {
     }
 
     if (botCfg && Object.keys(botCfg).length) {
-      const base = process.env.APP_URL || 'https://helpbet.vercel.app';
-      const r = await fetch(`${base}/api/best-bets?min_confidence=0.45&limit=40`);
-      const data = await r.json().catch(() => ({}));
-      let picks = Array.isArray(data.picks) ? data.picks : [];
+      const dates = Array.isArray(body.dates) ? body.dates.map((d) => String(d).trim()).filter(Boolean) : [];
+      let picks = await fetchPicksForSend('ALL', 0, dates.length ? 0 : 1, dates.length ? dates : null);
       const leagueFilter = Array.isArray(body.leagues) && body.leagues.length ? body.leagues.map((x) => String(x).toUpperCase()) : null;
       if (leagueFilter) picks = picks.filter((p) => leagueFilter.includes(String(p.sport || '').toUpperCase()));
-      const byLeague = {};
+      const byDate = {};
       for (const p of picks) {
-        const s = String(p.sport || 'OTHER').toUpperCase();
-        (byLeague[s] ||= []).push(p);
+        const k = pickDayKey(p) || 'unknown';
+        (byDate[k] ||= []).push(p);
       }
+      if (dates.length) {
+        for (const k of Object.keys(byDate)) {
+          if (!dates.includes(k)) delete byDate[k];
+        }
+      }
+      const finalDates = Object.keys(byDate).sort();
       let sent = 0;
       const posted = [];
-      for (const L of Object.keys(byLeague).sort()) {
-        const list = byLeague[L] || [];
-        if (!list.length) continue;
-        const channel = botCfg[`ch_${L}`] || botCfg.alerts;
-        if (!channel) continue;
-        const roleId = botCfg[`role_${L}`] || botCfg.role_ALL || botCfg.alert_role;
-        await sendChannel(channel, {
-          content: roleId ? `<@&${roleId}> · **${L}** best picks` : `**${L}** best picks`,
-          embeds: [{ title: `═══ ${L} ═══`, description: `**${list.length}** pick(s) from HelpBet`, color: LEAGUE_COLORS[L] || LEAGUE_COLORS.DEFAULT }],
-          allowed_mentions: roleId ? { roles: [roleId] } : { parse: [] },
-        });
-        await sleep(400);
-        for (const p of list.slice(0, 12)) {
-          await sendChannel(channel, pickEmbed(p));
-          sent += 1;
-          await sleep(1100);
+      const perDay = {};
+      for (const day of finalDates) {
+        const dayPicks = byDate[day] || [];
+        const byLeague = {};
+        for (const p of dayPicks) {
+          const s = String(p.sport || 'OTHER').toUpperCase();
+          (byLeague[s] ||= []).push(p);
         }
-        posted.push(L);
-        await sleep(400);
+        const leagueSummary = Object.keys(byLeague).sort().map((L) => `${L} ${byLeague[L].length}`).join(' · ');
+        perDay[day] = { total: dayPicks.length, by_league: Object.fromEntries(Object.keys(byLeague).map((L) => [L, byLeague[L].length])) };
+        const bannerChannel = botCfg.alerts || botCfg[`ch_${Object.keys(byLeague)[0]}`];
+        if (bannerChannel) {
+          await sendChannel(bannerChannel, {
+            embeds: [{ title: `═══ ${day} ═══`, description: `**${dayPicks.length}** pick(s)\n${leagueSummary}`, color: 0x38bdf8 }],
+          });
+          await sleep(400);
+        }
+        for (const L of Object.keys(byLeague).sort()) {
+          const list = byLeague[L] || [];
+          if (!list.length) continue;
+          const channel = botCfg[`ch_${L}`] || botCfg.alerts;
+          if (!channel) continue;
+          const roleId = botCfg[`role_${L}`] || botCfg.role_ALL || botCfg.alert_role;
+          await sendChannel(channel, {
+            content: roleId ? `<@&${roleId}> · **${L}** · ${day}` : `**${L}** · ${day}`,
+            embeds: [{ title: `═══ ${L} · ${day} ═══`, description: `**${list.length}** pick(s)`, color: LEAGUE_COLORS[L] || LEAGUE_COLORS.DEFAULT }],
+            allowed_mentions: roleId ? { roles: [roleId] } : { parse: [] },
+          });
+          await sleep(400);
+          for (const p of list.slice(0, 20)) {
+            await sendChannel(channel, pickEmbed(p));
+            sent += 1;
+            await sleep(1100);
+          }
+          if (!posted.includes(L)) posted.push(L);
+          await sleep(400);
+        }
       }
       if (!sent) {
-        return res.status(200).json({ ok: true, message: 'Linked Discord channels found but no picks matched. Set league channels in /config and try again.', channels_used: posted });
+        return res.status(200).json({ ok: true, message: dates.length ? `No picks on selected day(s): ${dates.join(', ')}` : 'No picks matched. Set league channels in /config.', dates, per_day: perDay, channels_used: posted });
       }
-      return res.status(200).json({ ok: true, message: `Posted ${sent} pick(s) to Discord channels: ${posted.join(', ')}`, sent, leagues: posted });
+      return res.status(200).json({ ok: true, message: `Posted ${sent} pick(s) for ${finalDates.join(', ')} → ${posted.join(', ')}`, sent, leagues: posted, dates: finalDates, per_day: perDay });
     }
 
     let webhook = body.webhook_url || userRow?.discord_webhook || cfg.default_webhook || process.env.DISCORD_WEBHOOK_URL;
