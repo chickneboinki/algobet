@@ -25,6 +25,7 @@ const CFG_ITEMS = [
   { key: 'alert_role', label: 'Default ping role', kind: 'role' },
 ];
 
+function chainKey() { return crypto.createHash('sha256').update(String(process.env.DISCORD_BOT_TOKEN || 'none')).digest('hex').slice(0, 40); }
 function sleep(ms) { return new Promise((r) => setTimeout(r, ms)); }
 
 async function botApi(method, path, body) {
@@ -227,15 +228,19 @@ async function pickEmbed(p) {
   // Player props category selector, like the website's prop board.
   // Keep the custom_id short (Discord's 100-char cap) — just sport + game id, resolved back via getGames().
   const gid = `${sport}:${p.game_id || ''}`;
+  let snap = null;
   try {
     const propsData = await propsForPick(p);
-    const names = [...new Set((propsData.props || []).map((x) => x.player).filter(Boolean))];
+    const slim = (x) => ({ player: x.player, team: x.team || null, market: x.market_label || x.market, line: x.line, book: x.book, lean: x.lean || null });
+    snap = { props: (propsData.props || []).filter((x) => x.player && x.line != null).slice(0, 150).map(slim), top_plays: (propsData.top_plays || []).slice(0, 12).map(slim) };
+    // Only list players that actually have stat lines — no empty entries
+    const names = [...new Set(snap.props.map((x) => x.player))];
     if (names.length) {
       const leanPlayers = new Set((propsData.top_plays || []).map((x) => x.player));
       names.sort((a, b) => (leanPlayers.has(b) - leanPlayers.has(a)) || a.localeCompare(b));
       const options = names.slice(0, 25).map((n) => ({ label: n.slice(0,100), value: n.slice(0,100), description: leanPlayers.has(n) ? 'Has a lean' : undefined }));
       rows.push({ type: 1, components: [{ type: 3, custom_id: `pp|sel|${gid}`, placeholder: 'Pick a player — stats, props & best bet', options }] });
-      if (propsData.top_plays?.length) {
+      if (snap.top_plays.length) {
         rows.push({ type: 1, components: [{ type: 2, style: 1, label: 'Best picks for this game (all stats)', custom_id: `pp|top|${gid}` }] });
       }
     }
@@ -244,6 +249,7 @@ async function pickEmbed(p) {
   return {
     embeds: [{ title: `${sport} · Best pick`, description: desc, color: LEAGUE_COLORS[sport]||LEAGUE_COLORS.DEFAULT, footer: { text: `game:${p.game_id || ''}` } }],
     components: rows,
+    _snap: snap,
   };
 }
 
@@ -372,12 +378,13 @@ async function alreadyPosted(gameId, channelId, side) {
 /** Send one pick embed and remember it in discord_posts so we can edit it at game-final and skip re-posting. */
 async function sendPickTracked(channel, p, guildId) {
   if (await alreadyPosted(p.game_id, channel)) return false;
-  const payload = await pickEmbed(p);
+  const { _snap, ...payload } = await pickEmbed(p);
   const msg = await sendChannel(channel, payload);
   try {
     await sb('discord_posts', {
       method: 'POST',
       body: {
+        id: crypto.randomUUID(),
         message_id: msg?.id || null,
         channel_id: channel,
         guild_id: guildId || null,
@@ -386,7 +393,7 @@ async function sendPickTracked(channel, p, guildId) {
         home_team: p.home_team,
         away_team: p.away_team,
         start_time: p.start_time || null,
-        snapshot: { recommended_side: p.recommended_side || p.side, confidence: p.confidence, algorithm_name: p.algorithm_name },
+        snapshot: { recommended_side: p.recommended_side || p.side, confidence: p.confidence, algorithm_name: p.algorithm_name, props: _snap?.props || [], top_plays: _snap?.top_plays || [] },
         status: 'pending',
       },
       prefer: 'return=minimal',
@@ -455,6 +462,14 @@ async function settlePostedPicks() {
   }
   return { checked: pending.length, settled };
 }
+async function snapFor(mid) {
+  if (!mid) return null;
+  try {
+    const rows = await sb(`discord_posts?message_id=eq.${mid}&select=snapshot&limit=1`);
+    const sn = rows?.[0]?.snapshot;
+    return sn && Array.isArray(sn.props) ? sn : null;
+  } catch { return null; }
+}
 async function runSendCommand(it, guildId, opt) {
   const league = String(opt('league') || 'ALL').toUpperCase();
   const daysChoice = String(opt('days') || 'today_and_tomorrow');
@@ -500,29 +515,39 @@ async function handleBotInteraction(it, res) {
   if (it.type === 3 && String(it.data?.custom_id || '').startsWith('pp|')) {
     const parts = String(it.data.custom_id).split('|');
     const act = parts[1];
+    const mid = /^\d+$/.test(parts[2] || '') ? parts[2] : it.message?.id;
+    const slow = async (gid) => {
+      // Fallback for old cards with no saved snapshot — must answer inside Discord's 3s window
+      const g = await resolveGame(gid);
+      if (!g) return null;
+      return fetchPropsForGame({ sport: g.l, home: g.h, away: g.a }).catch(() => null);
+    };
+    const load = async (gid) => {
+      const saved = await snapFor(mid);
+      if (saved) return saved;
+      return Promise.race([slow(gid), sleep(2000).then(() => 'timeout')]);
+    };
+    const busy = eph({ embeds: [{ title: 'Still loading this game\'s stats', description: 'Try again in a few seconds.', color: 0x6b7280 }] });
     try {
       if (act === 'sel') {
-        const gid = parts[2];
+        const propsData = await load(parts[2]);
+        if (propsData === 'timeout') return res.status(200).json(busy);
+        if (!propsData) return res.status(200).json(eph({ embeds: [{ title: 'Game not found (it may have started/finished).', color: 0x6b7280 }] }));
         const player = it.data.values?.[0];
-        const g = await resolveGame(gid);
-        if (!g) return res.status(200).json(eph({ embeds: [{ title: 'Game not found (it may have started/finished).', color: 0x6b7280 }] }));
-        const propsData = await fetchPropsForGame({ sport: g.l, home: g.h, away: g.a }).catch(() => ({ props: [] }));
         if (!player) return res.status(200).json(eph(topPlaysEmbed(propsData.top_plays || [])));
-        return res.status(200).json(eph(playerPropsEmbed(player, propsData.props || [], gid)));
+        return res.status(200).json(eph(playerPropsEmbed(player, propsData.props || [], mid || parts[2])));
       }
       if (act === 'top') {
-        const gid = parts[2];
-        const g = await resolveGame(gid);
-        if (!g) return res.status(200).json(eph({ embeds: [{ title: 'Game not found (it may have started/finished).', color: 0x6b7280 }] }));
-        const propsData = await fetchPropsForGame({ sport: g.l, home: g.h, away: g.a }).catch(() => ({ top_plays: [] }));
+        const propsData = await load(parts[2]);
+        if (propsData === 'timeout') return res.status(200).json(busy);
+        if (!propsData) return res.status(200).json(eph({ embeds: [{ title: 'Game not found (it may have started/finished).', color: 0x6b7280 }] }));
         return res.status(200).json(eph(topPlaysEmbed(propsData.top_plays || [])));
       }
       if (act === 'best') {
-        const gid = parts[2];
         const player = decId(parts[3]);
-        const g = await resolveGame(gid);
-        if (!g) return res.status(200).json({ type: 7, data: { embeds: [{ title: 'Game not found.', color: 0x6b7280 }], components: [] } });
-        const propsData = await fetchPropsForGame({ sport: g.l, home: g.h, away: g.a }).catch(() => ({ props: [] }));
+        const propsData = await load(parts[2]);
+        if (propsData === 'timeout') return res.status(200).json({ type: 7, data: busy.data });
+        if (!propsData) return res.status(200).json({ type: 7, data: { embeds: [{ title: 'Game not found.', color: 0x6b7280 }], components: [] } });
         const best = bestPlayerLean(propsData.props || [], player);
         if (!best) return res.status(200).json({ type: 7, data: { embeds: [{ title: `No strong lean for ${player}`, color: 0x6b7280 }], components: [] } });
         return res.status(200).json({ type: 7, data: bestPickEmbed(player, best) });
@@ -761,8 +786,11 @@ export default async function handler(req, res) {
     }
 
     if (botCfg && Object.keys(botCfg).length) {
-      const dates = Array.isArray(body.dates) ? body.dates.map((d) => String(d).trim()).filter(Boolean) : [];
-      // Auto-send covers today through +2 days (3 days), same range as /send "next 3 days".
+      const allDates = Array.isArray(body.dates) ? body.dates.map((d) => String(d).trim()).filter(Boolean).sort() : [];
+      const chained = body._cont && req.headers['x-hb-chain'] === chainKey();
+      // Handle ONE day per invocation (own 60s budget), then hand the rest to a fresh invocation, in order.
+      const dates = allDates.length ? [allDates[0]] : [];
+      const rest = allDates.slice(1);
       let picks = await fetchPicksForSend('ALL', 0, dates.length ? 0 : 2, dates.length ? dates : null);
       const leagueFilter = Array.isArray(body.leagues) && body.leagues.length ? body.leagues.map((x) => String(x).toUpperCase()) : null;
       if (leagueFilter) picks = picks.filter((p) => leagueFilter.includes(String(p.sport || '').toUpperCase()));
@@ -777,49 +805,58 @@ export default async function handler(req, res) {
         }
       }
       const finalDates = Object.keys(byDate).sort();
+      const startedAt = Date.now();
       let sent = 0;
+      let truncated = 0;
       const posted = [];
       const perDay = {};
+      const nice = (k) => new Date(`${k}T12:00:00Z`).toLocaleDateString('en-US', { weekday: 'long', month: 'long', day: 'numeric', timeZone: 'UTC' });
       for (const day of finalDates) {
         const dayPicks = byDate[day] || [];
         const byLeague = {};
         for (const p of dayPicks) {
-          const s = String(p.sport || 'OTHER').toUpperCase();
-          (byLeague[s] ||= []).push(p);
+          const s2 = String(p.sport || 'OTHER').toUpperCase();
+          (byLeague[s2] ||= []).push(p);
         }
-        const leagueSummary = Object.keys(byLeague).sort().map((L) => `${L} ${byLeague[L].length}`).join(' · ');
         perDay[day] = { total: dayPicks.length, by_league: Object.fromEntries(Object.keys(byLeague).map((L) => [L, byLeague[L].length])) };
-        const bannerChannel = botCfg.alerts || botCfg[`ch_${Object.keys(byLeague)[0]}`];
-        if (bannerChannel) {
-          await sendChannel(bannerChannel, {
-            embeds: [{ title: `═══ ${day} ═══`, description: `**${dayPicks.length}** pick(s)\n${leagueSummary}`, color: 0x38bdf8 }],
-          });
-          await sleep(400);
-        }
         for (const L of Object.keys(byLeague).sort()) {
-          const list = byLeague[L] || [];
+          const list = (byLeague[L] || []).slice(0, 12);
           if (!list.length) continue;
           const channel = botCfg[`ch_${L}`] || botCfg.alerts;
           if (!channel) continue;
           const roleId = botCfg[`role_${L}`] || botCfg.role_ALL || botCfg.alert_role;
+          // line between days, then the date header, then that day's games
+          if (chained) { await sendChannel(channel, { content: '━━━━━━━━━━━━━━━━━━━━━━━━━━━━' }); await sleep(300); }
           await sendChannel(channel, {
-            content: roleId ? `<@&${roleId}> · **${L}** · ${day}` : `**${L}** · ${day}`,
-            embeds: [{ title: `═══ ${L} · ${day} ═══`, description: `**${list.length}** pick(s)`, color: LEAGUE_COLORS[L] || LEAGUE_COLORS.DEFAULT }],
+            content: roleId ? `<@&${roleId}>` : undefined,
+            embeds: [{ title: `📅 ${nice(day)}`, description: `**${L}** · **${byLeague[L].length}** pick(s)`, color: LEAGUE_COLORS[L] || LEAGUE_COLORS.DEFAULT }],
             allowed_mentions: roleId ? { roles: [roleId] } : { parse: [] },
           });
-          await sleep(400);
-          for (const p of list.slice(0, 15)) {
+          await sleep(300);
+          // warm props for this league's games in parallel so posting is quick
+          for (let i = 0; i < list.length; i += 6) await Promise.all(list.slice(i, i + 6).map((p) => propsForPick(p)));
+          for (const p of list) {
+            if (Date.now() - startedAt > 50000) { truncated += 1; continue; }
             if (await sendPickTracked(channel, p, guildId)) sent += 1;
-            await sleep(1100);
+            await sleep(650);
           }
           if (!posted.includes(L)) posted.push(L);
-          await sleep(400);
         }
       }
-      if (!sent) {
-        return res.status(200).json({ ok: true, message: dates.length ? `No picks on selected day(s): ${dates.join(', ')}` : 'No picks matched. Set league channels in /config.', dates, per_day: perDay, channels_used: posted });
+      if (rest.length) {
+        try {
+          await fetch(`${process.env.APP_URL || 'https://helpbet.vercel.app'}/api/notify`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', 'x-hb-chain': chainKey() },
+            body: JSON.stringify({ ...body, dates: rest, _cont: true }),
+            signal: AbortSignal.timeout(2000),
+          });
+        } catch {}
       }
-      return res.status(200).json({ ok: true, message: `Posted ${sent} pick(s) for ${finalDates.join(', ')} → ${posted.join(', ')}`, sent, leagues: posted, dates: finalDates, per_day: perDay });
+      if (!sent && !rest.length) {
+        return res.status(200).json({ ok: true, message: allDates.length ? `No picks on selected day(s): ${allDates.join(', ')}` : 'No picks matched. Set league channels in /config.', dates: allDates, per_day: perDay, channels_used: posted });
+      }
+      return res.status(200).json({ ok: true, message: `Posted ${sent} pick(s) for ${finalDates.join(', ') || dates.join(', ')}${rest.length ? ` — remaining days (${rest.join(', ')}) are posting next, in order` : ''}${truncated ? ` · ${truncated} skipped to stay in time` : ''}`, sent, leagues: posted, dates: allDates, per_day: perDay });
     }
 
     let webhook = body.webhook_url || userRow?.discord_webhook || cfg.default_webhook || process.env.DISCORD_WEBHOOK_URL;
