@@ -61,5 +61,12 @@ export default async function handler(req, res) {
     out.steps.notify = { error: e.message };
   }
 
+  try {
+    const f = await fetch(`${base}/api/notify?route=finalize`);
+    out.steps.finalize = await f.json().catch(() => ({}));
+  } catch (e) {
+    out.steps.finalize = { error: e.message };
+  }
+
   return res.status(200).json({ ok: true, ...out });
 }
