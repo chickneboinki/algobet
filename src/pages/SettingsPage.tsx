@@ -118,7 +118,7 @@ export default function SettingsPage() {
         leagues,
         webhook_url: wh,
       })
-      setMsg(r.ok ? `Posted — today ${r.today ?? 0} · tomorrow ${r.tomorrow ?? 0} cards` : r.error || 'Done')
+      setMsg(r.ok ? `Posted ${r.total ?? 0} cards over the next 3 days (${(r.days || []).map((d: any) => `${d.label.toLowerCase()} ${d.cards}`).join(' · ')})${r.bot_error ? ' — buttons off: ' + r.bot_error : ''}` : r.error || 'Done')
     } catch (e: any) {
       setMsg(e.message || 'Test failed')
     } finally {

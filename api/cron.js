@@ -61,5 +61,20 @@ export default async function handler(req, res) {
     out.steps.notify = { error: e.message };
   }
 
+  try {
+    const key = (await import('node:crypto')).createHash('sha256').update(String(process.env.DISCORD_BOT_TOKEN || 'none')).digest('hex').slice(0, 40);
+    const pa = await fetch(`${base}/api/notify?route=postall`, { headers: { 'x-hb-internal': key } });
+    out.steps.postall = await pa.json().catch(() => ({}));
+  } catch (e) {
+    out.steps.postall = { error: e.message };
+  }
+
+  try {
+    const f = await fetch(`${base}/api/notify?route=tick`);
+    out.steps.finalize = await f.json().catch(() => ({}));
+  } catch (e) {
+    out.steps.finalize = { error: e.message };
+  }
+
   return res.status(200).json({ ok: true, ...out });
 }

@@ -170,9 +170,17 @@ async function fetchFanDuel(sport) {
 
 async function fetchEspnDk(sport) {
   const path = SPORT_PATHS[sport] || SPORT_PATHS.NFL;
-  const res = await fetch(`https://site.api.espn.com/apis/site/v2/sports/${path}/scoreboard`, {
-    headers: { 'User-Agent': 'Mozilla/5.0', Accept: 'application/json' },
-  });
+  // Today through +3 days (Central) so the Discord digest can look 3 days ahead
+  const ymd = (d) => d.toISOString().slice(0, 10).replace(/-/g, '');
+  const [cy, cm, cd] = new Date()
+    .toLocaleDateString('en-CA', { timeZone: 'America/Chicago' })
+    .split('-')
+    .map(Number);
+  const range = `${ymd(new Date(Date.UTC(cy, cm - 1, cd, 12)))}-${ymd(new Date(Date.UTC(cy, cm - 1, cd + 3, 12)))}`;
+  const res = await fetch(
+    `https://site.api.espn.com/apis/site/v2/sports/${path}/scoreboard?dates=${range}&limit=300`,
+    { headers: { 'User-Agent': 'Mozilla/5.0', Accept: 'application/json' } }
+  );
   if (!res.ok) throw new Error(`ESPN ${res.status}`);
   const data = await res.json();
   return (data.events || []).map((ev) => {
