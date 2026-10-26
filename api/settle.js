@@ -41,7 +41,7 @@ function profitUnits(status, stake, odds) {
   return 0;
 }
 
-async function fetchCompleted(sport) {
+export async function fetchCompleted(sport) {
   const path = SPORT_PATHS[sport] || SPORT_PATHS.NFL;
   const res = await fetch(`https://site.api.espn.com/apis/site/v2/sports/${path}/scoreboard`, {
     headers: { 'User-Agent': 'Mozilla/5.0', Accept: 'application/json' },

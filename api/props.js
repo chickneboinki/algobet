@@ -221,17 +221,11 @@ async function fetchUnderdog() {
   return out;
 }
 
-export default async function handler(req, res) {
-  res.setHeader('Access-Control-Allow-Origin', '*');
-  res.setHeader('Access-Control-Allow-Methods', 'GET,OPTIONS');
-  res.setHeader('Cache-Control', 'public, s-maxage=15, stale-while-revalidate=30');
-  if (req.method === 'OPTIONS') return res.status(200).end();
-
-  const sport = String(req.query.sport || '').toUpperCase();
-  const home = String(req.query.home || '');
-  const away = String(req.query.away || '');
-  const scope = String(req.query.scope || 'game');
-  const combos = req.query.combos === '1';
+/** Shared core: live props for one game. Used by the API route and the Discord bot. */
+export async function fetchPropsForGame({ sport, home, away, scope = 'game', combos = false } = {}) {
+  sport = String(sport || '').toUpperCase();
+  home = String(home || '');
+  away = String(away || '');
 
   const homeKeys = teamKeys(home, sport);
   const awayKeys = teamKeys(away, sport);
@@ -290,7 +284,7 @@ export default async function handler(req, res) {
 
   const live_count = props.filter((p) => p.live).length;
 
-  return res.status(200).json({
+  return {
     source: props.length ? 'live' : 'empty',
     count: props.length,
     live_count,
@@ -300,5 +294,34 @@ export default async function handler(req, res) {
     note: props.length
       ? 'Live player props from PrizePicks and Underdog.'
       : 'No player props are posted for this game yet. They usually appear a day or two before kickoff.',
+  };
+}
+
+/** Best single lean for one player across all their props in a game's prop set. */
+export function bestPlayerLean(props, player) {
+  const pk = norm(player);
+  const rows = props.filter((p) => norm(p.player) === pk && p.lean);
+  if (!rows.length) return null;
+  rows.sort(
+    (a, b) =>
+      STRENGTH_RANK[b.lean.strength] - STRENGTH_RANK[a.lean.strength] ||
+      (b.lean.gap || b.lean.prob || 0) - (a.lean.gap || a.lean.prob || 0)
+  );
+  return rows[0];
+}
+
+export default async function handler(req, res) {
+  res.setHeader('Access-Control-Allow-Origin', '*');
+  res.setHeader('Access-Control-Allow-Methods', 'GET,OPTIONS');
+  res.setHeader('Cache-Control', 'public, s-maxage=15, stale-while-revalidate=30');
+  if (req.method === 'OPTIONS') return res.status(200).end();
+
+  const out = await fetchPropsForGame({
+    sport: req.query.sport,
+    home: req.query.home,
+    away: req.query.away,
+    scope: req.query.scope || 'game',
+    combos: req.query.combos === '1',
   });
+  return res.status(200).json(out);
 }

@@ -1,4 +1,8 @@
 import crypto from 'node:crypto';
+import { americanToProb } from './_odds.js';
+import { getGames } from './games.js';
+import { fetchPropsForGame, bestPlayerLean } from './props.js';
+import { fetchCompleted } from './settle.js';
 
 const LEAGUE_COLORS = { NFL: 0x013369, NCAAF: 0xe87722, NCAAB: 0x7c3aed, NBA: 0xc8102e, MLB: 0x002d72, NHL: 0x1e3a5f, DEFAULT: 0x38bdf8 };
 const LEAGUE_KEYS = ['NFL', 'NBA', 'NCAAF', 'NCAAB', 'MLB', 'NHL'];
@@ -159,7 +163,45 @@ function verifyPassword(password, salt, hash) {
 }
 function ctDayKey(d) { return d.toLocaleDateString('en-CA', { timeZone: 'America/Chicago' }); }
 function addDaysCT(base, n) { return new Date(base.getTime() + n * 86400000); }
-function pickEmbed(p) {
+function moneylineField(p) {
+  const o = p.odds || {};
+  const parts = [];
+  if (o.ml_home != null || o.ml_away != null) parts.push(`**ML:** ${o.ml_away ?? '—'} / ${o.ml_home ?? '—'}`);
+  if (o.spread_home != null) parts.push(`**Spread:** ${o.spread_home > 0 ? '+' : ''}${o.spread_home}`);
+  if (o.total != null) parts.push(`**Total:** ${o.total}`);
+  return parts.join('  ·  ');
+}
+
+/** Short-lived cache so one /send run doesn't refetch props per pick in the same game. */
+const propsMemCache = new Map();
+async function propsForPick(p) {
+  const key = `${p.sport}|${p.home_team}|${p.away_team}`;
+  if (propsMemCache.has(key)) return propsMemCache.get(key);
+  const promise = fetchPropsForGame({ sport: p.sport, home: p.home_team, away: p.away_team })
+    .catch(() => ({ props: [], top_plays: [] }));
+  propsMemCache.set(key, promise);
+  setTimeout(() => propsMemCache.delete(key), 5 * 60 * 1000).unref?.();
+  return promise;
+}
+
+function encId(s) { return Buffer.from(String(s)).toString('base64url').slice(0, 80); }
+function decId(s) { try { return Buffer.from(String(s), 'base64url').toString('utf8'); } catch { return ''; } }
+const gameLookupCache = new Map();
+async function resolveGame(gid) {
+  const [sport, id] = String(gid).split(':');
+  if (!sport || !id) return null;
+  if (!gameLookupCache.has(sport)) {
+    const p = getGames(sport).then((r) => r.games || []).catch(() => []);
+    gameLookupCache.set(sport, p);
+    setTimeout(() => gameLookupCache.delete(sport), 5 * 60 * 1000).unref?.();
+  }
+  const games = await gameLookupCache.get(sport);
+  const g = games.find((x) => x.id === id);
+  if (!g) return null;
+  return { l: sport, h: g.home_team, a: g.away_team };
+}
+
+async function pickEmbed(p) {
   const sport = String(p.sport || 'SPORT').toUpperCase();
   const side = p.recommended_side || p.side || '?';
   const conf = p.confidence != null ? Math.round(Number(p.confidence) * 100) : null;
@@ -167,14 +209,76 @@ function pickEmbed(p) {
   const fd = p.links?.fanduel || 'https://sportsbook.fanduel.com';
   const dk = p.links?.draftkings || 'https://sportsbook.draftkings.com';
   const pp = p.links?.prizepicks || 'https://prizepicks.com';
+  const mlLine = moneylineField(p);
+  const desc = [
+    `**${p.away_team||'Away'} vs ${p.home_team||'Home'}**`,
+    `**When:** ${when}`,
+    `**Lean:** **${String(side).toUpperCase()}**${conf!=null?` · ${conf}%`:''}`,
+    mlLine || null,
+    p.reasoning ? `**Why:** ${String(p.reasoning).slice(0, 280)}` : null,
+  ].filter(Boolean).join('\n');
+
+  const rows = [{ type: 1, components: [
+    { type: 2, style: 5, label: 'FanDuel', url: String(fd).slice(0,512) },
+    { type: 2, style: 5, label: 'DraftKings', url: String(dk).slice(0,512) },
+    { type: 2, style: 5, label: 'PrizePicks', url: String(pp).slice(0,512) },
+  ]}];
+
+  // Player props category selector, like the website's prop board.
+  // Keep the custom_id short (Discord's 100-char cap) — just sport + game id, resolved back via getGames().
+  const gid = `${sport}:${p.game_id || ''}`;
+  try {
+    const propsData = await propsForPick(p);
+    const names = [...new Set((propsData.props || []).map((x) => x.player).filter(Boolean))];
+    if (names.length) {
+      const leanPlayers = new Set((propsData.top_plays || []).map((x) => x.player));
+      names.sort((a, b) => (leanPlayers.has(b) - leanPlayers.has(a)) || a.localeCompare(b));
+      const options = names.slice(0, 25).map((n) => ({ label: n.slice(0,100), value: n.slice(0,100), description: leanPlayers.has(n) ? 'Has a lean' : undefined }));
+      rows.push({ type: 1, components: [{ type: 3, custom_id: `pp|sel|${gid}`, placeholder: 'Pick a player — stats, props & best bet', options }] });
+      if (propsData.top_plays?.length) {
+        rows.push({ type: 1, components: [{ type: 2, style: 1, label: 'Best picks for this game (all stats)', custom_id: `pp|top|${gid}` }] });
+      }
+    }
+  } catch {}
+
   return {
-    embeds: [{ title: `${sport} · Best pick`, description: `**${p.away_team||'Away'} vs ${p.home_team||'Home'}**\n**When:** ${when}\n**Lean:** **${String(side).toUpperCase()}**${conf!=null?` · ${conf}%`:''}\n${p.reasoning?`**Why:** ${String(p.reasoning).slice(0,280)}`:''}`, color: LEAGUE_COLORS[sport]||LEAGUE_COLORS.DEFAULT }],
-    components: [{ type: 1, components: [
-      { type: 2, style: 5, label: 'FanDuel', url: String(fd).slice(0,512) },
-      { type: 2, style: 5, label: 'DraftKings', url: String(dk).slice(0,512) },
-      { type: 2, style: 5, label: 'PrizePicks', url: String(pp).slice(0,512) },
-    ]}],
+    embeds: [{ title: `${sport} · Best pick`, description: desc, color: LEAGUE_COLORS[sport]||LEAGUE_COLORS.DEFAULT, footer: { text: `game:${p.game_id || ''}` } }],
+    components: rows,
   };
+}
+
+function propLine(pr) {
+  const l = pr.lean;
+  const tag = l ? ` — **lean ${String(l.side).toUpperCase()}** (${l.strength})` : '';
+  return `**${pr.market}** ${pr.line ?? '?'} · ${pr.book}${tag}`;
+}
+function playerPropsEmbed(player, props, gid) {
+  const rows = props.filter((p) => p.player === player);
+  const team = rows.find((r) => r.team)?.team;
+  const lines = rows.slice(0, 20).map(propLine);
+  const best = bestPlayerLean(props, player);
+  const components = [];
+  if (best) components.push({ type: 1, components: [{ type: 2, style: 3, label: 'Best pick for this player', custom_id: `pp|best|${gid}|${encId(player)}` }] });
+  return {
+    embeds: [{ title: `${player}${team ? ` · ${team}` : ''}`, description: lines.length ? lines.join('\n') : 'No stat lines available for this player right now.', color: 0x38bdf8 }],
+    components,
+  };
+}
+function bestPickEmbed(player, lean) {
+  const l = lean.lean;
+  return {
+    embeds: [{
+      title: `Best pick · ${player}`,
+      description: `**${lean.market}** ${lean.line ?? ''}\n**Lean: ${String(l.side).toUpperCase()}** · ${l.strength} confidence\n${l.why || ''}`.trim(),
+      color: 0x22c55e,
+    }],
+    components: [],
+  };
+}
+function topPlaysEmbed(topPlays) {
+  if (!topPlays.length) return { embeds: [{ title: 'Best picks', description: 'No strong leans for this game yet.', color: 0x38bdf8 }], components: [] };
+  const lines = topPlays.slice(0, 10).map((p) => `**${p.player}** — ${p.market} ${p.line ?? ''} · lean **${String(p.lean.side).toUpperCase()}** (${p.lean.strength})`);
+  return { embeds: [{ title: 'Best picks for this game', description: lines.join('\n'), color: 0x22c55e }], components: [] };
 }
 function pickDayKey(p) {
   const iso = p.start_time || p.commence_time;
@@ -222,11 +326,14 @@ async function fetchPicksForSend(league, startOff, endOff, dateList) {
       const odds = g.odds || {};
       const mlH = odds.ml_home, mlA = odds.ml_away;
       if (mlH == null && mlA == null) continue;
-      let side = 'home', conf = 0.52;
-      if (mlH != null && mlA != null) {
-        if (mlA > mlH) { side = 'away'; conf = 0.55; }
-        else { side = 'home'; conf = 0.55; }
-      } else if (mlA != null) side = 'away';
+      // Real market-implied win probability (vig-removed), not a fixed guess.
+      const pH = americanToProb(mlH ?? -110);
+      const pA = americanToProb(mlA ?? -110);
+      const sum = pH + pA || 1;
+      const fairH = pH / sum, fairA = pA / sum;
+      let side, conf;
+      if (fairH >= fairA) { side = 'home'; conf = fairH; } else { side = 'away'; conf = fairA; }
+      conf = Math.max(0.51, Math.min(0.85, conf));
       picks.push({
         game_id: g.id,
         sport,
@@ -254,6 +361,99 @@ async function fetchPicksForSend(league, startOff, endOff, dateList) {
     uniq.push(p);
   }
   return uniq;
+}
+async function alreadyPosted(gameId, channelId, side) {
+  if (!gameId) return false;
+  try {
+    const rows = await sb(`discord_posts?game_id=eq.${encodeURIComponent(gameId)}&channel_id=eq.${channelId}&select=id&limit=1`);
+    return Boolean(rows?.length);
+  } catch { return false; }
+}
+/** Send one pick embed and remember it in discord_posts so we can edit it at game-final and skip re-posting. */
+async function sendPickTracked(channel, p, guildId) {
+  if (await alreadyPosted(p.game_id, channel)) return false;
+  const payload = await pickEmbed(p);
+  const msg = await sendChannel(channel, payload);
+  try {
+    await sb('discord_posts', {
+      method: 'POST',
+      body: {
+        message_id: msg?.id || null,
+        channel_id: channel,
+        guild_id: guildId || null,
+        game_id: p.game_id || null,
+        sport: String(p.sport || '').toUpperCase(),
+        home_team: p.home_team,
+        away_team: p.away_team,
+        start_time: p.start_time || null,
+        snapshot: { recommended_side: p.recommended_side || p.side, confidence: p.confidence, algorithm_name: p.algorithm_name },
+        status: 'pending',
+      },
+      prefer: 'return=minimal',
+    });
+  } catch {}
+  return true;
+}
+function teamKeyLoose(name) { return String(name || '').toLowerCase().replace(/[^a-z0-9\s]/g, '').trim(); }
+function teamsMatchLoose(a, b) {
+  const aa = teamKeyLoose(a), bb = teamKeyLoose(b);
+  if (!aa || !bb) return false;
+  if (aa === bb) return true;
+  const ap = aa.split(/\s+/).pop(), bp = bb.split(/\s+/).pop();
+  return (ap && bb.includes(ap)) || (bp && aa.includes(bp));
+}
+/** Find pending posted picks whose game has gone final, edit the Discord message with the result, mark settled. */
+async function settlePostedPicks() {
+  let pending;
+  try {
+    pending = await sb(`discord_posts?status=eq.pending&select=*&order=created_at.asc&limit=100`);
+  } catch { return { checked: 0, settled: 0 }; }
+  if (!pending?.length) return { checked: 0, settled: 0 };
+
+  const sports = [...new Set(pending.map((r) => String(r.sport || 'NFL').toUpperCase()))];
+  const finals = [];
+  for (const s of sports) { try { finals.push(...(await fetchCompleted(s))); } catch {} }
+
+  let settled = 0;
+  for (const row of pending) {
+    const match = finals.find((f) =>
+      String(f.sport).toUpperCase() === String(row.sport).toUpperCase() &&
+      teamsMatchLoose(f.home_team, row.home_team) && teamsMatchLoose(f.away_team, row.away_team)
+    );
+    if (!match) continue;
+    const side = String(row.snapshot?.recommended_side || '').toLowerCase();
+    let hit = null;
+    if (side === 'home' || side === 'away') {
+      if (match.home_score === match.away_score) hit = 'push';
+      else {
+        const homeWon = match.home_score > match.away_score;
+        hit = (side === 'home' && homeWon) || (side === 'away' && !homeWon) ? 'hit' : 'miss';
+      }
+    }
+    const resultText = `**FINAL:** ${match.away_team} ${match.away_score} — ${match.home_score} ${match.home_team}` +
+      (hit ? `\n**Bet result:** ${hit === 'hit' ? '✅ HIT' : hit === 'push' ? '➖ PUSH' : '❌ MISS'} (lean was ${side.toUpperCase()})` : '');
+    if (row.channel_id && row.message_id) {
+      try {
+        await botApi('PATCH', `/channels/${row.channel_id}/messages/${row.message_id}`, {
+          embeds: [{
+            title: `${String(row.sport||'').toUpperCase()} · Game over`,
+            description: `**${row.away_team} vs ${row.home_team}**\n${resultText}`,
+            color: hit === 'hit' ? 0x22c55e : hit === 'miss' ? 0xef4444 : 0x6b7280,
+          }],
+          components: [],
+        });
+      } catch {}
+    }
+    try {
+      await sb(`discord_posts?id=eq.${row.id}`, {
+        method: 'PATCH',
+        body: { status: 'final', result: { home_score: match.home_score, away_score: match.away_score, hit } },
+        prefer: 'return=minimal',
+      });
+    } catch {}
+    settled += 1;
+  }
+  return { checked: pending.length, settled };
 }
 async function runSendCommand(it, guildId, opt) {
   const league = String(opt('league') || 'ALL').toUpperCase();
@@ -285,7 +485,7 @@ async function runSendCommand(it, guildId, opt) {
     if (!channel) { await follow(`Skip **${L}**: set channel in /config`); continue; }
     await sendChannel(channel, { embeds: [{ title: `═══ ${L} ═══`, description: `**${list.length}** pick(s) · days **${startOff}** to **${endOff}**`, color: LEAGUE_COLORS[L]||LEAGUE_COLORS.DEFAULT }] });
     await sleep(400);
-    for (const p of list.slice(0, 15)) { await sendChannel(channel, pickEmbed(p)); sent += 1; await sleep(1100); }
+    for (const p of list.slice(0, 15)) { if (await sendPickTracked(channel, p, guildId)) sent += 1; await sleep(1100); }
     await sendChannel(channel, { embeds: [{ title: `End of ${L}`, description: `All **${L}** picks for this range.`, color: LEAGUE_COLORS[L]||LEAGUE_COLORS.DEFAULT }] });
     await sleep(400);
   }
@@ -297,6 +497,41 @@ async function handleBotInteraction(it, res) {
   const name = it.data?.name;
   const opt = (n) => (it.data?.options || []).find((x) => x.name === n)?.value;
 
+  if (it.type === 3 && String(it.data?.custom_id || '').startsWith('pp|')) {
+    const parts = String(it.data.custom_id).split('|');
+    const act = parts[1];
+    try {
+      if (act === 'sel') {
+        const gid = parts[2];
+        const player = it.data.values?.[0];
+        const g = await resolveGame(gid);
+        if (!g) return res.status(200).json(eph({ embeds: [{ title: 'Game not found (it may have started/finished).', color: 0x6b7280 }] }));
+        const propsData = await fetchPropsForGame({ sport: g.l, home: g.h, away: g.a }).catch(() => ({ props: [] }));
+        if (!player) return res.status(200).json(eph(topPlaysEmbed(propsData.top_plays || [])));
+        return res.status(200).json(eph(playerPropsEmbed(player, propsData.props || [], gid)));
+      }
+      if (act === 'top') {
+        const gid = parts[2];
+        const g = await resolveGame(gid);
+        if (!g) return res.status(200).json(eph({ embeds: [{ title: 'Game not found (it may have started/finished).', color: 0x6b7280 }] }));
+        const propsData = await fetchPropsForGame({ sport: g.l, home: g.h, away: g.a }).catch(() => ({ top_plays: [] }));
+        return res.status(200).json(eph(topPlaysEmbed(propsData.top_plays || [])));
+      }
+      if (act === 'best') {
+        const gid = parts[2];
+        const player = decId(parts[3]);
+        const g = await resolveGame(gid);
+        if (!g) return res.status(200).json({ type: 7, data: { embeds: [{ title: 'Game not found.', color: 0x6b7280 }], components: [] } });
+        const propsData = await fetchPropsForGame({ sport: g.l, home: g.h, away: g.a }).catch(() => ({ props: [] }));
+        const best = bestPlayerLean(propsData.props || [], player);
+        if (!best) return res.status(200).json({ type: 7, data: { embeds: [{ title: `No strong lean for ${player}`, color: 0x6b7280 }], components: [] } });
+        return res.status(200).json({ type: 7, data: bestPickEmbed(player, best) });
+      }
+    } catch (e) {
+      return res.status(200).json(eph({ embeds: [{ title: 'Error', description: String(e.message || e).slice(0,200), color: 0xef4444 }] }));
+    }
+    return res.status(200).json(text('Unknown action.'));
+  }
   if (it.type === 3 && String(it.data?.custom_id || '').startsWith('role|')) {
     const roleKey = String(it.data.custom_id).split('|')[1];
     const cfg = await loadCfg(guildId);
@@ -503,7 +738,10 @@ export default async function handler(req, res) {
   try {
     const raw = await readRaw(req);
     if (route === 'interactions') return await handleInteraction(req, res, raw);
-    if (route === 'tick' || route === 'finalize') return res.status(200).json({ ok: true, note: 'tick compact' });
+    if (route === 'tick' || route === 'finalize') {
+      const out = await settlePostedPicks().catch((e) => ({ error: e.message || String(e) }));
+      return res.status(200).json({ ok: true, ...out });
+    }
     if (route === 'register') return res.status(200).json({ ok: true, note: 'Use /api/cron?route=bot-register' });
     let body = {};
     try { body = raw ? JSON.parse(raw) : {}; } catch {}
@@ -524,7 +762,8 @@ export default async function handler(req, res) {
 
     if (botCfg && Object.keys(botCfg).length) {
       const dates = Array.isArray(body.dates) ? body.dates.map((d) => String(d).trim()).filter(Boolean) : [];
-      let picks = await fetchPicksForSend('ALL', 0, dates.length ? 0 : 1, dates.length ? dates : null);
+      // Auto-send covers today through +2 days (3 days), same range as /send "next 3 days".
+      let picks = await fetchPicksForSend('ALL', 0, dates.length ? 0 : 2, dates.length ? dates : null);
       const leagueFilter = Array.isArray(body.leagues) && body.leagues.length ? body.leagues.map((x) => String(x).toUpperCase()) : null;
       if (leagueFilter) picks = picks.filter((p) => leagueFilter.includes(String(p.sport || '').toUpperCase()));
       const byDate = {};
@@ -570,8 +809,7 @@ export default async function handler(req, res) {
           });
           await sleep(400);
           for (const p of list.slice(0, 15)) {
-            await sendChannel(channel, pickEmbed(p));
-            sent += 1;
+            if (await sendPickTracked(channel, p, guildId)) sent += 1;
             await sleep(1100);
           }
           if (!posted.includes(L)) posted.push(L);
