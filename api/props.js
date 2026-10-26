@@ -3,10 +3,8 @@ import { americanToProb } from './_odds.js';
 /**
  * Live player props for ONE game.
  * Sources: PrizePicks (More/Less) + Underdog (Higher/Lower, with prices).
- * The game is matched by team name, so every prop returned belongs to that game.
  */
 
-// PrizePicks league ids (used to narrow the board; falls back to the full board if empty)
 const PP_LEAGUE_ID = { NFL: 9, NBA: 7, NHL: 8, MLB: 2, NCAAF: 15, NCAAB: 20 };
 
 const PARTIAL_RE = /\b(1st|2nd|3rd|4th|1h|2h|1q|2q|3q|4q|1st half|2nd half|first half|second half)\b/i;
@@ -14,14 +12,13 @@ const UD_PARTIAL_RE = /^(1q|2q|3q|4q|1h|2h)\b/i;
 
 const norm = (s) => String(s || '').toLowerCase().replace(/[^a-z0-9 ]/g, ' ').replace(/\s+/g, ' ').trim();
 
-/** Words that identify a team: full name, nickname, and (for college) the school name. */
 function teamKeys(name, sport) {
   const full = norm(name);
   if (!full) return [];
   const words = full.split(' ');
   const keys = new Set([full]);
-  if (words.length > 1) keys.add(words[words.length - 1]); // nickname: "saints"
-  if ((sport === 'NCAAF' || sport === 'NCAAB') && words.length > 1) keys.add(words.slice(0, -1).join(' ')); // "alabama"
+  if (words.length > 1) keys.add(words[words.length - 1]);
+  if ((sport === 'NCAAF' || sport === 'NCAAB') && words.length > 1) keys.add(words.slice(0, -1).join(' '));
   return [...keys].filter((k) => k.length >= 3);
 }
 
@@ -30,8 +27,6 @@ function textHasTeam(text, keys) {
   return keys.some((k) => t.includes(` ${k} `));
 }
 
-
-/** Make "Rush+Rec Yds" and "Rush + Rec Yards" look the same so books can be compared. */
 function marketKey(m) {
   return norm(String(m || '').replace(/\s*\+\s*/g, '+'))
     .replace(/\byds\b/g, 'yards')
@@ -41,12 +36,6 @@ function marketKey(m) {
 
 const STRENGTH_RANK = { High: 3, Medium: 2, Low: 1 };
 
-/**
- * Two simple player tools:
- *  1) Line Gap   - PrizePicks and Underdog post different lines for the same stat.
- *                  The lower number is the easier Over, the higher number the easier Under.
- *  2) Market Lean - Underdog's Over/Under prices show which side the market thinks is likelier.
- */
 function addPlayerTools(props) {
   const groups = new Map();
   for (const p of props) {
@@ -59,7 +48,6 @@ function addPlayerTools(props) {
     const pp = rows.find((r) => r.source === 'prizepicks');
     const ud = rows.find((r) => r.source === 'underdog');
 
-    // 1) Line gap
     if (pp && ud && pp.line != null && ud.line != null) {
       const diff = Math.abs(pp.line - ud.line);
       const avg = (pp.line + ud.line) / 2;
@@ -70,17 +58,22 @@ function addPlayerTools(props) {
         const pct = diff / avg;
         const strength = pct >= 0.08 ? 'High' : pct >= 0.05 ? 'Medium' : 'Low';
         low.lean = {
-          side: 'over', strength, type: 'Line gap', gap: diff,
+          side: 'over',
+          strength,
+          type: 'Line gap',
+          gap: diff,
           why: `${high.book} has this at ${high.line} but ${low.book} has it at ${low.line}. Over ${low.line} is the easier number.`,
         };
         high.lean = {
-          side: 'under', strength, type: 'Line gap', gap: diff,
+          side: 'under',
+          strength,
+          type: 'Line gap',
+          gap: diff,
           why: `${high.book} has this at ${high.line} but ${low.book} has it at ${low.line}. Under ${high.line} is the easier number.`,
         };
       }
     }
 
-    // 2) Market lean (only if no line gap already set, and both prices exist)
     for (const r of rows) {
       if (r.lean || r.over == null || r.under == null) continue;
       const po = americanToProb(r.over);
@@ -110,21 +103,42 @@ async function fetchJson(url, headers) {
 async function fetchPrizePicks(sport) {
   const headers = {
     'User-Agent':
-      'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+      'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
     Accept: 'application/json',
+    Referer: 'https://app.prizepicks.com/',
   };
   const base = 'https://partner-api.prizepicks.com/projections?single_stat=true&per_page=1000';
+
+  async function getWithRetry(url, tries = 4) {
+    let lastErr;
+    for (let i = 0; i < tries; i++) {
+      try {
+        const res = await fetch(url, { headers });
+        if (res.status === 429) {
+          await new Promise((r) => setTimeout(r, 800 * (i + 1)));
+          continue;
+        }
+        if (!res.ok) throw new Error(String(res.status));
+        return await res.json();
+      } catch (e) {
+        lastErr = e;
+        await new Promise((r) => setTimeout(r, 500 * (i + 1)));
+      }
+    }
+    throw lastErr || new Error('PrizePicks failed');
+  }
+
   let body;
   const lid = PP_LEAGUE_ID[sport];
   if (lid) {
     try {
-      body = await fetchJson(`${base}&league_id=${lid}`, headers);
+      body = await getWithRetry(`${base}&league_id=${lid}`);
       if (!(body.data || []).length) body = null;
     } catch {
       body = null;
     }
   }
-  if (!body) body = await fetchJson(base, headers);
+  if (!body) body = await getWithRetry(base);
 
   const players = {};
   for (const row of body.included || []) {
@@ -133,7 +147,7 @@ async function fetchPrizePicks(sport) {
   const out = [];
   for (const d of body.data || []) {
     const a = d.attributes || {};
-    if (a.odds_type && a.odds_type !== 'standard') continue; // skip demon/goblin alternate lines
+    if (a.odds_type && a.odds_type !== 'standard') continue;
     const p = players[d.relationships?.new_player?.data?.id] || {};
     const market = a.stat_type || a.stat_display_name || 'Prop';
     out.push({
@@ -216,7 +230,7 @@ export default async function handler(req, res) {
   const sport = String(req.query.sport || '').toUpperCase();
   const home = String(req.query.home || '');
   const away = String(req.query.away || '');
-  const scope = String(req.query.scope || 'game'); // "game" = full-game only, "all" = include halves/quarters
+  const scope = String(req.query.scope || 'game');
   const combos = req.query.combos === '1';
 
   const homeKeys = teamKeys(home, sport);
@@ -230,15 +244,11 @@ export default async function handler(req, res) {
   ]);
 
   const keep = (p, isPP) => {
-    if (!combos && / \+ /.test(p.player)) return false; // combo props (two players)
+    if (!combos && / \+ /.test(p.player)) return false;
     if (scope !== 'all' && p.partial) return false;
     if (p.line == null) return false;
     if (!haveTeams) return true;
-    if (isPP) {
-      // PrizePicks gives the player's team; it must be one of the two teams playing
-      return textHasTeam(p.team, homeKeys) || textHasTeam(p.team, awayKeys);
-    }
-    // Underdog gives "Away Team @ Home Team"; both teams must appear
+    if (isPP) return textHasTeam(p.team, homeKeys) || textHasTeam(p.team, awayKeys);
     return textHasTeam(p.game_title, homeKeys) && textHasTeam(p.game_title, awayKeys);
   };
 
@@ -258,7 +268,6 @@ export default async function handler(req, res) {
     .sort((a, b) => Number(b.live) - Number(a.live) || a.player.localeCompare(b.player))
     .slice(0, 400);
 
-  // Fill in each player's team (Underdog does not say; PrizePicks does)
   const teamOf = {};
   for (const p of props) if (p.team) teamOf[norm(p.player)] = p.team;
   for (const p of props) if (!p.team) p.team = teamOf[norm(p.player)] || null;
@@ -274,7 +283,6 @@ export default async function handler(req, res) {
         (b.lean.gap || b.lean.prob || 0) - (a.lean.gap || a.lean.prob || 0)
     )
     .filter((p, i, arr) => {
-      // one entry per player + stat (a line gap otherwise shows up twice: Over low line, Under high line)
       const k = `${norm(p.player)}|${marketKey(p.market)}`;
       return arr.findIndex((q) => `${norm(q.player)}|${marketKey(q.market)}` === k) === i;
     })
