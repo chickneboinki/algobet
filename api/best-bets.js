@@ -114,6 +114,19 @@ function ncaaEngine(game) {
 const winChance = (game) => winChanceTool(game);
 const EVALUATORS = [winChance, nflEngine, ncaaEngine, softLine, homeDog, blowoutFade, underdog, contrarian, homeAdv];
 
+/** Run every tool on one game; returns all picks, best first. */
+export function runAllTools(game, weights = {}) {
+  const out = [];
+  for (const fn of EVALUATORS) {
+    try {
+      const p = fn(game);
+      if (!p || p.recommended_side === 'none') continue;
+      out.push({ ...p, score: scorePick(p, weights) });
+    } catch (_) {}
+  }
+  return out.sort((a, b) => b.score - a.score);
+}
+
 function scorePick(p, weights) {
   const w = weights[p.algorithm_id] ?? 1;
   const conf = p.confidence || 0.5;
@@ -168,7 +181,7 @@ export default async function handler(req, res) {
   const supabaseUrl = process.env.VITE_SUPABASE_URL || process.env.SUPABASE_URL;
   const supabaseKey = process.env.VITE_SUPABASE_ANON_KEY || process.env.SUPABASE_ANON_KEY;
   const minConf = Number(req.query.min_confidence || 0.5);
-  const limit = Math.min(Number(req.query.limit || 15), 40);
+  const limit = Math.min(Number(req.query.limit || 15), 300);
 
   let games = (await fetchGames()).map(normalizeForTools);
   if (!games.length && req.method === 'POST' && Array.isArray(req.body?.games)) games = req.body.games;

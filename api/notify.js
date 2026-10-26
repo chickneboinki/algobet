@@ -1,5 +1,6 @@
 import crypto from 'node:crypto';
-import { americanToProb } from './_odds.js';
+import { americanToProb, normalizeForTools } from './_odds.js';
+import { runAllTools } from './best-bets.js';
 import { getGames } from './games.js';
 import { fetchPropsForGame, bestPlayerLean } from './props.js';
 import { fetchCompleted } from './settle.js';
@@ -309,7 +310,7 @@ async function fetchPicksForSend(league, startOff, endOff, dateList) {
     return k >= rangeStart && k <= rangeEnd;
   };
 
-  const r = await fetch(`${base}/api/best-bets?min_confidence=0.30&limit=250`);
+  const r = await fetch(`${base}/api/best-bets?min_confidence=0.30&limit=300`);
   const data = await r.json().catch(() => ({}));
   let picks = (Array.isArray(data.picks) ? data.picks : []).filter(inRange);
   if (league && league !== 'ALL') picks = picks.filter((p) => String(p.sport || '').toUpperCase() === league);
@@ -330,43 +331,32 @@ async function fetchPicksForSend(league, startOff, endOff, dateList) {
       const key = `${sport}|${g.home_team}|${g.away_team}`;
       if (seen.has(key)) continue;
       const odds = g.odds || {};
-      const mlH = odds.ml_home, mlA = odds.ml_away;
-      if (mlH == null && mlA == null) continue;
-      // Real market-implied win probability (vig-removed), not a fixed guess.
-      const pH = americanToProb(mlH ?? -110);
-      const pA = americanToProb(mlA ?? -110);
-      const sum = pH + pA || 1;
-      const fairH = pH / sum, fairA = pA / sum;
-      let side, conf;
-      if (fairH >= fairA) { side = 'home'; conf = fairH; } else { side = 'away'; conf = fairA; }
-      conf = Math.max(0.51, Math.min(0.85, conf));
-      picks.push({
-        game_id: g.id,
-        sport,
-        home_team: g.home_team,
-        away_team: g.away_team,
-        start_time: g.start_time || g.commence_time,
-        recommended_side: side,
-        confidence: conf,
-        expected_value: 0.02,
-        algorithm_name: 'Board lean',
-        reasoning: 'Live board lean from available moneyline (not full AI rank).',
-        odds,
-        links: g.links,
-      });
+      const base2 = { game_id: g.id, sport, home_team: g.home_team, away_team: g.away_team, start_time: g.start_time || g.commence_time, odds, books: g.books, links: g.links };
+      const ranked = runAllTools(normalizeForTools(g));
+      if (ranked[0]) {
+        picks.push({ ...ranked[0], ...base2 });
+      } else {
+        // Every tool ran and none found an edge — show the market favorite honestly
+        const mlH = odds.ml_home, mlA = odds.ml_away;
+        if (mlH == null && mlA == null) continue;
+        const pH = americanToProb(mlH ?? -110), pA = americanToProb(mlA ?? -110);
+        const sum = pH + pA || 1;
+        const side = pH >= pA ? 'home' : 'away';
+        const fair = Math.max(pH, pA) / sum;
+        picks.push({ ...base2, recommended_side: side, confidence: fair, expected_value: 0, score: fair, algorithm_name: 'No tool edge', reasoning: 'All tools ran on this game and none found an edge. Showing the market favorite.' });
+      }
       seen.add(key);
     }
   } catch {}
 
-  const uniq = [];
-  const u = new Set();
+  const bestPer = new Map();
   for (const p of picks) {
-    const id = `${String(p.sport||'').toUpperCase()}|${p.home_team}|${p.away_team}|${p.recommended_side}`;
-    if (u.has(id)) continue;
-    u.add(id);
-    uniq.push(p);
+    const k = `${String(p.sport || '').toUpperCase()}|${p.home_team}|${p.away_team}`;
+    const sc = p.score ?? p.confidence ?? 0;
+    const cur = bestPer.get(k);
+    if (!cur || sc > cur._sc) bestPer.set(k, { ...p, _sc: sc });
   }
-  return uniq;
+  return [...bestPer.values()].sort((x, y) => new Date(x.start_time || 0) - new Date(y.start_time || 0));
 }
 async function alreadyPosted(gameId, channelId, side) {
   if (!gameId) return false;
@@ -795,6 +785,7 @@ export default async function handler(req, res) {
 
     if (botCfg && Object.keys(botCfg).length) {
       const allDates = Array.isArray(body.dates) ? body.dates.map((d) => String(d).trim()).filter(Boolean).sort() : [];
+      const resume = body._resume === true;
       const chained = body._cont && req.headers['x-hb-chain'] === chainKey();
       // Handle ONE day per invocation (own 60s budget), then hand the rest to a fresh invocation, in order.
       const dates = allDates.length ? [allDates[0]] : [];
@@ -829,7 +820,7 @@ export default async function handler(req, res) {
         perDay[day] = { total: dayPicks.length, by_league: Object.fromEntries(Object.keys(byLeague).map((L) => [L, byLeague[L].length])) };
         // Each league has its own channel, so post all leagues at the same time
         await Promise.all(Object.keys(byLeague).sort().map(async (L) => {
-          const list = (byLeague[L] || []).slice(0, 12);
+          const list = (byLeague[L] || []).slice(0, 60);
           if (!list.length) return;
           const channel = botCfg[`ch_${L}`] || botCfg.alerts;
           if (!channel) return;
@@ -839,8 +830,8 @@ export default async function handler(req, res) {
             ...Array.from({ length: Math.ceil(list.length / 12) }, (_, i) => Promise.all(list.slice(i * 12, i * 12 + 12).map((p) => propsForPick(p)))),
           ]);
           // line between days, then the date header, then that day's games
-          if (chained) { await sendChannel(channel, { content: '━━━━━━━━━━━━━━━━━━━━━━━━━━━━' }); await sleep(200); }
-          await sendChannel(channel, {
+          if (chained && !resume) { await sendChannel(channel, { content: '━━━━━━━━━━━━━━━━━━━━━━━━━━━━' }); await sleep(200); }
+          if (!resume) await sendChannel(channel, {
             content: roleId ? `<@&${roleId}>` : undefined,
             embeds: [{ title: `📅 ${nice(day)}`, description: `**${L}** · **${byLeague[L].length}** pick(s)`, color: LEAGUE_COLORS[L] || LEAGUE_COLORS.DEFAULT }],
             allowed_mentions: roleId ? { roles: [roleId] } : { parse: [] },
@@ -856,17 +847,19 @@ export default async function handler(req, res) {
           if (!posted.includes(L)) posted.push(L);
         }));
       }
-      if (rest.length) {
+      const depth = Number(body._depth || 0);
+      const more = truncated > 0 && depth < 5;
+      if (rest.length || more) {
         try {
           await fetch(`${process.env.APP_URL || 'https://helpbet.vercel.app'}/api/notify`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json', 'x-hb-chain': chainKey() },
-            body: JSON.stringify({ ...body, dates: rest, _cont: true }),
+            body: JSON.stringify({ ...body, dates: more ? [dates[0], ...rest] : rest, _cont: true, _resume: more, _depth: depth + 1 }),
             signal: AbortSignal.timeout(2000),
           });
         } catch {}
       }
-      if (!sent && !rest.length) {
+      if (!sent && !rest.length && !more) {
         return res.status(200).json({ ok: true, message: allDates.length ? `No picks on selected day(s): ${allDates.join(', ')}` : 'No picks matched. Set league channels in /config.', dates: allDates, per_day: perDay, channels_used: posted });
       }
       return res.status(200).json({ ok: true, message: `Posted ${sent} pick(s) for ${finalDates.join(', ') || dates.join(', ')}${rest.length ? ` — remaining days (${rest.join(', ')}) are posting next, in order` : ''}${truncated ? ` · ${truncated} skipped to stay in time` : ''}`, sent, leagues: posted, dates: allDates, per_day: perDay });
