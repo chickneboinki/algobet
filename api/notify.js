@@ -291,7 +291,7 @@ async function botApi(method, path, body) {
     const r = await fetch(`https://discord.com/api/v10${path}`, {
       method,
       headers: { Authorization: `Bot ${process.env.DISCORD_BOT_TOKEN}`, 'Content-Type': 'application/json' },
-      body: body ? JSON.stringify({ allowed_mentions: { parse: [] }, ...body }) : undefined,
+      body: body ? JSON.stringify(Array.isArray(body) ? body : { allowed_mentions: { parse: [] }, ...body }) : undefined,
     });
     const text = await r.text();
     if (r.ok) return text ? JSON.parse(text) : null;
