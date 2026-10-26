@@ -11,6 +11,7 @@
   "rewrites": [
     { "source": "/api/health", "destination": "/api/cron?route=health" },
     { "source": "/api/discord-interactions", "destination": "/api/notify?route=interactions" },
+    { "source": "/api/discord-register", "destination": "/api/notify?route=register" },
     { "source": "/api/discord-finalize", "destination": "/api/notify?route=finalize" },
     { "source": "/api/(.*)", "destination": "/api/$1" },
     { "source": "/(.*)", "destination": "/index.html" }
