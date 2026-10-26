@@ -2,6 +2,7 @@
  * Live games: FanDuel sbapi + ESPN DraftKings.
  * sport=ALL pulls every major league.
  * Past tip-offs hidden unless include_past=1.
+ * ?days=1 returns Central calendar days that still have bets.
  */
 
 const SPORT_PATHS = {
@@ -282,10 +283,75 @@ export async function getAllGames() {
   return { games: all, note: notes.join(' · ') };
 }
 
+function centralDateKey(iso) {
+  try {
+    return new Date(iso).toLocaleDateString('en-CA', { timeZone: 'America/Chicago' });
+  } catch {
+    return null;
+  }
+}
+
+function labelDay(key) {
+  try {
+    const [y, m, d] = key.split('-').map(Number);
+    const dt = new Date(Date.UTC(y, m - 1, d, 17, 0, 0));
+    return dt.toLocaleDateString('en-US', {
+      timeZone: 'America/Chicago',
+      weekday: 'short',
+      month: 'short',
+      day: 'numeric',
+    });
+  } catch {
+    return key;
+  }
+}
+
+async function buildDaysList() {
+  const now = Date.now();
+  const counts = new Map();
+  await Promise.all(
+    ALL_SPORTS.map(async (sport) => {
+      try {
+        const { games } = await getGames(sport);
+        for (const g of games) {
+          const iso = g.start_time || g.commence_time;
+          if (!iso) continue;
+          const t = new Date(iso).getTime();
+          if (!Number.isFinite(t) || t < now - 2 * 60e3) continue;
+          if (!(g.odds || (g.books && Object.keys(g.books).length))) continue;
+          const key = centralDateKey(iso);
+          if (!key) continue;
+          if (!counts.has(key)) counts.set(key, { date: key, count: 0, sports: new Set() });
+          const row = counts.get(key);
+          row.count += 1;
+          row.sports.add(String(g.sport || sport).toUpperCase());
+        }
+      } catch {}
+    })
+  );
+  return [...counts.values()]
+    .map((d) => ({
+      date: d.date,
+      label: labelDay(d.date),
+      count: d.count,
+      sports: [...d.sports].sort(),
+    }))
+    .sort((a, b) => a.date.localeCompare(b.date));
+}
+
 export default async function handler(req, res) {
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Cache-Control', 's-maxage=45, stale-while-revalidate=90');
   if (req.method === 'OPTIONS') return res.status(200).end();
+
+  if (req.query.days === '1' || req.query.mode === 'days') {
+    const days = await buildDaysList();
+    return res.status(200).json({
+      timezone: 'America/Chicago',
+      days,
+      refreshed_at: new Date().toISOString(),
+    });
+  }
 
   const sport = (req.query.sport || 'NFL').toUpperCase();
   const includePast = req.query.include_past === '1';
@@ -302,6 +368,16 @@ export default async function handler(req, res) {
       if (g.live) return true;
       return t > cutoff;
     });
+  }
+
+  if (req.query.dates) {
+    const set = new Set(
+      String(req.query.dates)
+        .split(',')
+        .map((x) => x.trim())
+        .filter(Boolean)
+    );
+    games = games.filter((g) => set.has(centralDateKey(g.start_time || g.commence_time)));
   }
 
   return res.status(200).json({
