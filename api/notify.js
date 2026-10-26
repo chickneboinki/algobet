@@ -376,30 +376,38 @@ async function alreadyPosted(gameId, channelId, side) {
   } catch { return false; }
 }
 /** Send one pick embed and remember it in discord_posts so we can edit it at game-final and skip re-posting. */
-async function sendPickTracked(channel, p, guildId) {
-  if (await alreadyPosted(p.game_id, channel)) return false;
+async function sendPickTracked(channel, p, guildId, opts = {}) {
+  if (opts.known ? opts.known.has(String(p.game_id)) : await alreadyPosted(p.game_id, channel)) return false;
   const { _snap, ...payload } = await pickEmbed(p);
   const msg = await sendChannel(channel, payload);
-  try {
-    await sb('discord_posts', {
-      method: 'POST',
-      body: {
-        id: crypto.randomUUID(),
-        message_id: msg?.id || null,
-        channel_id: channel,
-        guild_id: guildId || null,
-        game_id: p.game_id || null,
-        sport: String(p.sport || '').toUpperCase(),
-        home_team: p.home_team,
-        away_team: p.away_team,
-        start_time: p.start_time || null,
-        snapshot: { recommended_side: p.recommended_side || p.side, confidence: p.confidence, algorithm_name: p.algorithm_name, props: _snap?.props || [], top_plays: _snap?.top_plays || [] },
-        status: 'pending',
-      },
-      prefer: 'return=minimal',
-    });
-  } catch {}
+  // Save in the background (awaited later in one batch) so the next card isn't delayed
+  const ins = sb('discord_posts', {
+    method: 'POST',
+    body: {
+      id: crypto.randomUUID(),
+      message_id: msg?.id || null,
+      channel_id: channel,
+      guild_id: guildId || null,
+      game_id: p.game_id || null,
+      sport: String(p.sport || '').toUpperCase(),
+      home_team: p.home_team,
+      away_team: p.away_team,
+      start_time: p.start_time || null,
+      snapshot: { recommended_side: p.recommended_side || p.side, confidence: p.confidence, algorithm_name: p.algorithm_name, props: _snap?.props || [], top_plays: _snap?.top_plays || [] },
+      status: 'pending',
+    },
+    prefer: 'return=minimal',
+  }).catch(() => {});
+  if (opts.inserts) opts.inserts.push(ins); else await ins;
   return true;
+}
+async function knownGameIds(channel, list) {
+  const ids = list.map((p) => p.game_id).filter(Boolean).map((x) => `"${String(x).replace(/"/g, '')}"`);
+  if (!ids.length) return new Set();
+  try {
+    const rows = await sb(`discord_posts?channel_id=eq.${channel}&game_id=in.(${ids.join(',')})&select=game_id`);
+    return new Set((rows || []).map((r) => String(r.game_id)));
+  } catch { return new Set(); }
 }
 function teamKeyLoose(name) { return String(name || '').toLowerCase().replace(/[^a-z0-9\s]/g, '').trim(); }
 function teamsMatchLoose(a, b) {
@@ -819,29 +827,34 @@ export default async function handler(req, res) {
           (byLeague[s2] ||= []).push(p);
         }
         perDay[day] = { total: dayPicks.length, by_league: Object.fromEntries(Object.keys(byLeague).map((L) => [L, byLeague[L].length])) };
-        for (const L of Object.keys(byLeague).sort()) {
+        // Each league has its own channel, so post all leagues at the same time
+        await Promise.all(Object.keys(byLeague).sort().map(async (L) => {
           const list = (byLeague[L] || []).slice(0, 12);
-          if (!list.length) continue;
+          if (!list.length) return;
           const channel = botCfg[`ch_${L}`] || botCfg.alerts;
-          if (!channel) continue;
+          if (!channel) return;
           const roleId = botCfg[`role_${L}`] || botCfg.role_ALL || botCfg.alert_role;
+          const [known] = await Promise.all([
+            knownGameIds(channel, list),
+            ...Array.from({ length: Math.ceil(list.length / 12) }, (_, i) => Promise.all(list.slice(i * 12, i * 12 + 12).map((p) => propsForPick(p)))),
+          ]);
           // line between days, then the date header, then that day's games
-          if (chained) { await sendChannel(channel, { content: '━━━━━━━━━━━━━━━━━━━━━━━━━━━━' }); await sleep(300); }
+          if (chained) { await sendChannel(channel, { content: '━━━━━━━━━━━━━━━━━━━━━━━━━━━━' }); await sleep(200); }
           await sendChannel(channel, {
             content: roleId ? `<@&${roleId}>` : undefined,
             embeds: [{ title: `📅 ${nice(day)}`, description: `**${L}** · **${byLeague[L].length}** pick(s)`, color: LEAGUE_COLORS[L] || LEAGUE_COLORS.DEFAULT }],
             allowed_mentions: roleId ? { roles: [roleId] } : { parse: [] },
           });
-          await sleep(300);
-          // warm props for this league's games in parallel so posting is quick
-          for (let i = 0; i < list.length; i += 6) await Promise.all(list.slice(i, i + 6).map((p) => propsForPick(p)));
+          await sleep(200);
+          const inserts = [];
           for (const p of list) {
-            if (Date.now() - startedAt > 50000) { truncated += 1; continue; }
-            if (await sendPickTracked(channel, p, guildId)) sent += 1;
-            await sleep(650);
+            if (Date.now() - startedAt > 52000) { truncated += 1; continue; }
+            if (await sendPickTracked(channel, p, guildId, { known, inserts })) sent += 1;
+            await sleep(250);
           }
+          await Promise.all(inserts);
           if (!posted.includes(L)) posted.push(L);
-        }
+        }));
       }
       if (rest.length) {
         try {
