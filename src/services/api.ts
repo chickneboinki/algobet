@@ -49,12 +49,15 @@ export const api = {
     leagues?: string[]
     username?: string
     dates?: string[]
+    force?: boolean
   }) => {
     const session = loadSession()
     return req<any>('/send-days', {
       method: 'POST',
       body: JSON.stringify({
         ...opts,
+        // Explicit website Send always posts cards under headers (force)
+        force: opts?.force !== false,
         username: opts?.username || session?.username,
         token: session?.token,
       }),
