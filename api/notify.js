@@ -2,7 +2,7 @@ import {
   enc, dec, parseGid, categorySelect, playerSelect, playerBetsPayload, bestPickPayload, topPlaysPayload,
 } from './_props_ui.js';
 import {
-  GUILD, BASE, LEAGUE_KEYS, botApi, loadCfg, saveCfg, isAdmin, followUp, editOriginal, wipeChannel, clearChannelMessages, sb,
+  GUILD, BASE, LEAGUE_KEYS, botApi, loadCfg, saveCfg, isAdmin, followUp, editOriginal, wipeChannel, sb,
 } from './_bot_util.js';
 
 async function resolveGame(gid) {
@@ -60,13 +60,6 @@ function ack(res, content) {
 
 function defer(res) {
   return res.status(200).json({ type: 5, data: { flags: 64 } });
-}
-
-function formatWipeResult(ch, r) {
-  let line = '<#' + ch + '>: **' + r.deleted + '** deleted';
-  if (r.remaining > 0) line += ' · ~' + r.remaining + ' left';
-  if (r.errors && r.errors.length) line += '\n  ⚠ ' + r.errors[0];
-  return line;
 }
 
 export const config = { api: { bodyParser: false } };
@@ -182,7 +175,6 @@ export default async function handler(req, res) {
         }
       }
 
-      // /resetchannel — wipe ONE channel (required option)
       if (name === 'resetchannel') {
         if (!isAdmin(it)) return ack(res, 'Admin only (Manage Server).');
         const channel = opt('channel') || it.channel_id;
@@ -190,11 +182,11 @@ export default async function handler(req, res) {
         defer(res);
         try {
           const r = await wipeChannel(String(channel));
-          let msg = '**Reset <#' + channel + '>**\nDeleted **' + r.deleted + '** messages.';
-          if (r.remaining > 0) msg += '\n~' + r.remaining + ' still visible (may need another run).';
-          if (r.errors && r.errors.length) msg += '\n⚠ ' + r.errors.join('\n⚠ ');
+          let msg = '**Reset <#' + channel + '>** — deleted **' + r.deleted + '** msgs.';
+          if (r.remaining > 0) msg += ' (~' + r.remaining + ' left — run again if needed)';
+          if (r.errors && r.errors.length) msg += '\n⚠ ' + r.errors.join(' · ');
           if (r.deleted === 0 && (!r.errors || !r.errors.length)) {
-            msg = '<#' + channel + '> was already empty (or bot cannot see messages).';
+            msg = '<#' + channel + '> already empty (or bot cannot see messages).';
           }
           await finish(it, msg);
         } catch (e) {
@@ -203,57 +195,8 @@ export default async function handler(req, res) {
         return;
       }
 
-      // /wipeallchannel — wipe every channel saved in /config
       if (name === 'wipeallchannel') {
-        if (!isAdmin(it)) return ack(res, 'Admin only (Manage Server).');
-        defer(res);
-        try {
-          const cfg = await loadCfg(guildId);
-          const channels = new Set();
-          for (let i = 0; i < LEAGUE_KEYS.length; i++) {
-            const L = LEAGUE_KEYS[i];
-            if (cfg['ch_' + L]) channels.add(String(cfg['ch_' + L]));
-          }
-          const extra = ['tracker', 'stats', 'alerts', 'roles_panel'];
-          for (let i = 0; i < extra.length; i++) {
-            if (cfg[extra[i]]) channels.add(String(cfg[extra[i]]));
-          }
-          // Optional single-channel override if Discord ever adds the option
-          const one = opt('channel');
-          if (one) {
-            channels.clear();
-            channels.add(String(one));
-          }
-          // Always include the channel the command was run in
-          if (it.channel_id) channels.add(String(it.channel_id));
-
-          if (!channels.size) {
-            await finish(it, 'No channels found. Set them with **/config** first, or run this inside a channel.');
-            return;
-          }
-
-          await finish(it, 'Wiping **' + channels.size + '** channel(s)… (this can take a minute)');
-          const results = [];
-          let total = 0;
-          const list = Array.from(channels);
-          for (let i = 0; i < list.length; i++) {
-            const ch = list[i];
-            try {
-              const r = await wipeChannel(ch);
-              total += r.deleted;
-              results.push(formatWipeResult(ch, r));
-            } catch (e) {
-              results.push('<#' + ch + '>: ' + String(e.message || e).slice(0, 80));
-            }
-          }
-          await finish(
-            it,
-            '**Wipe done** · **' + total + '** messages deleted across ' + list.length + ' channel(s)\n' + results.join('\n')
-          );
-        } catch (e) {
-          await finish(it, 'Wipe error: ' + String(e.message || e).slice(0, 150));
-        }
-        return;
+        return ack(res, 'Removed. Use **/resetchannel** and pick a channel (faster + more reliable).');
       }
 
       if (name === 'send') {
@@ -288,7 +231,6 @@ export default async function handler(req, res) {
       return ack(res, 'Unknown command: /' + (name || '?'));
     }
 
-    // Components (buttons / selects)
     if (it.type === 3) {
       const cid = String((it.data && it.data.custom_id) || '');
       const parts = cid.split('|');
@@ -358,5 +300,5 @@ export default async function handler(req, res) {
     }
   }
 
-  return res.status(200).json({ ok: true, service: 'notify', fixed: true, wipe: 'v2' });
+  return res.status(200).json({ ok: true, service: 'notify', wipe: 'fast' });
 }
