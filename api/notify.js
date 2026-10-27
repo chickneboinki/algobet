@@ -6,13 +6,15 @@ import {
 } from './_bot_util.js';
 
 async function resolveGame(gid) {
-  const { sport, gameId } = parseGid(gid);
+  const parsed = parseGid(gid);
+  const sport = parsed.sport;
+  const gameId = parsed.gameId;
   try {
     const r = await fetch(BASE() + '/api/games?sport=' + encodeURIComponent(sport || 'ALL'));
     const d = await r.json().catch(function() { return {}; });
     const games = Array.isArray(d.games) ? d.games : [];
     const g = games.find(function(x) { return String(x.id) === String(gameId); })
-      || games.find(function(x) { return String(x.id).includes(String(gameId)); });
+      || games.find(function(x) { return String(x.id).indexOf(String(gameId)) >= 0; });
     if (g) return { sport: String(g.sport || sport).toUpperCase(), home: g.home_team, away: g.away_team, id: g.id };
   } catch (e) {}
   return { sport: sport, home: '', away: '', id: gameId };
@@ -41,12 +43,14 @@ async function finish(it, payload) {
   const body = typeof payload === 'string' ? { content: String(payload).slice(0, 1900) } : payload;
   try {
     await editOriginal(it, body);
-    return;
+    return true;
   } catch (e1) {
     try {
       await followUp(it, body);
+      return true;
     } catch (e2) {
       console.error('finish failed', String(e1 && e1.message || e1), String(e2 && e2.message || e2));
+      return false;
     }
   }
 }
@@ -78,7 +82,7 @@ export default async function handler(req, res) {
 
   const isDiscord =
     route === 'interactions' ||
-    String(req.url || '').includes('discord-interactions') ||
+    String(req.url || '').indexOf('discord-interactions') >= 0 ||
     (it && typeof it.type === 'number' && it.type >= 1 && it.type <= 5);
 
   if (isDiscord && it && typeof it.type === 'number') {
@@ -179,7 +183,10 @@ export default async function handler(req, res) {
         if (!isAdmin(it)) return ack(res, 'Admin only (Manage Server).');
         const channel = opt('channel') || it.channel_id;
         if (!channel) return ack(res, 'Pick a channel.');
+
         defer(res);
+        await finish(it, 'Clearing <#' + channel + '>…');
+
         try {
           const r = await wipeChannel(String(channel));
           let msg = '**Reset <#' + channel + '>** — deleted **' + r.deleted + '** msgs.';
@@ -196,12 +203,13 @@ export default async function handler(req, res) {
       }
 
       if (name === 'wipeallchannel') {
-        return ack(res, 'Removed. Use **/resetchannel** and pick a channel (faster + more reliable).');
+        return ack(res, 'Removed. Use **/resetchannel** and pick a channel.');
       }
 
       if (name === 'send') {
         if (!isAdmin(it)) return ack(res, 'Admin only.');
         defer(res);
+        await finish(it, 'Sending picks…');
         try {
           const daysChoice = String(opt('days') || 'today_and_tomorrow');
           const now = new Date();
@@ -300,5 +308,5 @@ export default async function handler(req, res) {
     }
   }
 
-  return res.status(200).json({ ok: true, service: 'notify', wipe: 'fast' });
+  return res.status(200).json({ ok: true, service: 'notify', wipe: 'instant' });
 }
