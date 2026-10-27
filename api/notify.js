@@ -361,7 +361,7 @@ async function fetchPicksForSend(league, startOff, endOff, dateList) {
 async function alreadyPosted(gameId, channelId, side) {
   if (!gameId) return false;
   try {
-    const rows = await sb(`discord_posts?game_id=eq.${encodeURIComponent(gameId)}&channel_id=eq.${channelId}&select=id&limit=1`);
+    const rows = await sb(`discord_posts?game_id=eq.${encodeURIComponent(gameId)}&channel_id=eq.${channelId}&created_at=gt.${new Date(Date.now() - 10 * 60e3).toISOString()}&select=id&limit=1`);
     return Boolean(rows?.length);
   } catch { return false; }
 }
@@ -395,7 +395,7 @@ async function knownGameIds(channel, list) {
   const ids = list.map((p) => p.game_id).filter(Boolean).map((x) => `"${String(x).replace(/"/g, '')}"`);
   if (!ids.length) return new Set();
   try {
-    const rows = await sb(`discord_posts?channel_id=eq.${channel}&game_id=in.(${ids.join(',')})&select=game_id`);
+    const rows = await sb(`discord_posts?channel_id=eq.${channel}&game_id=in.(${ids.join(',')})&created_at=gt.${new Date(Date.now() - 10 * 60e3).toISOString()}&select=game_id`);
     return new Set((rows || []).map((r) => String(r.game_id)));
   } catch { return new Set(); }
 }
@@ -826,7 +826,7 @@ export default async function handler(req, res) {
           if (!channel) return;
           const roleId = botCfg[`role_${L}`] || botCfg.role_ALL || botCfg.alert_role;
           const [known] = await Promise.all([
-            knownGameIds(channel, list),
+            resume ? knownGameIds(channel, list) : Promise.resolve(new Set()),
             ...Array.from({ length: Math.ceil(list.length / 12) }, (_, i) => Promise.all(list.slice(i * 12, i * 12 + 12).map((p) => propsForPick(p)))),
           ]);
           // line between days, then the date header, then that day's games
