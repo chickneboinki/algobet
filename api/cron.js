@@ -9,16 +9,16 @@ async function registerDiscordBot() {
   if (!token) return { ok: false, error: 'DISCORD_BOT_TOKEN missing in Vercel env' };
 
   const headers = {
-    Authorization: 'Bot ' + token,
+    Authorization: `Bot ${token}`,
     'Content-Type': 'application/json',
   };
 
-  const meRes = await fetch('https://discord.com/api/v10/applications/@me', { headers: headers });
+  const meRes = await fetch('https://discord.com/api/v10/applications/@me', { headers });
   const meText = await meRes.text();
-  if (!meRes.ok) return { ok: false, error: 'applications/@me ' + meRes.status + ': ' + meText.slice(0, 200) };
+  if (!meRes.ok) return { ok: false, error: `applications/@me ${meRes.status}: ${meText.slice(0, 200)}` };
   const me = JSON.parse(meText);
   const appId = me.id;
-  if (!appId) return { ok: false, error: 'No application id', me: me };
+  if (!appId) return { ok: false, error: 'No application id', me };
 
   const admin = { default_member_permissions: '32', dm_permission: false };
   const channelOpt = {
@@ -27,15 +27,9 @@ async function registerDiscordBot() {
     description: 'Channel',
     channel_types: [0, 5],
   };
-  const roleOpt = function(name, desc) { return { type: 8, name: name, description: desc }; };
+  const roleOpt = (name, desc) => ({ type: 8, name, description: desc });
 
-  // PUT replaces the FULL command list for this guild — keep this in sync with notify.js handlers
   const commands = [
-    {
-      name: 'test',
-      description: 'Check that HelpBet bot is online',
-      dm_permission: false,
-    },
     {
       name: 'login',
       description: 'Link your HelpBet website account to Discord (syncs settings)',
@@ -45,29 +39,70 @@ async function registerDiscordBot() {
         { type: 3, name: 'password', description: 'HelpBet password', required: true },
       ],
     },
+    { name: 'logout', description: 'Unlink your HelpBet account', dm_permission: false },
+    { name: 'mybets', description: 'Your bets from your linked HelpBet account', dm_permission: false },
     { name: 'config', description: 'Admin: set league channels, tracker, stats, alerts, roles panel', ...admin },
     {
       name: 'send',
-      description: 'Admin: send best picks for chosen days',
+      description: 'Admin: send best picks for a league (or all) for chosen days',
       ...admin,
       options: [
         {
           type: 3,
+          name: 'league',
+          description: 'League or ALL',
+          required: true,
+          choices: [{ name: 'ALL leagues', value: 'ALL' }, ...LEAGUES.map((l) => ({ name: l, value: l }))],
+        },
+        {
+          type: 3,
           name: 'days',
-          description: 'Day range (Central time)',
+          description: 'Quick range (Central time). Overridden by start_day/end_day if set.',
           required: false,
           choices: [
             { name: 'Today only', value: 'today' },
             { name: 'Tomorrow only', value: 'tomorrow' },
             { name: 'Today + tomorrow', value: 'today_and_tomorrow' },
-            { name: 'Next 3 days', value: 'next_3' },
+            { name: 'Next 3 days (today..+2)', value: 'next_3' },
           ],
         },
+        {
+          type: 4,
+          name: 'start_day',
+          description: 'Day offset from today (0=today, 1=tomorrow, -1=yesterday). Optional.',
+          required: false,
+          min_value: -7,
+          max_value: 30,
+        },
+        {
+          type: 4,
+          name: 'end_day',
+          description: 'End day offset from today (inclusive). Optional.',
+          required: false,
+          min_value: -7,
+          max_value: 30,
+        },
+        { ...channelOpt, description: 'Optional override channel (else uses /config league channel)', required: false },
+      ],
+    },
+    {
+      name: 'post',
+      description: 'Admin: post a short league note (use /send for full picks)',
+      ...admin,
+      options: [
+        {
+          type: 3,
+          name: 'league',
+          description: 'League',
+          required: true,
+          choices: LEAGUES.map((l) => ({ name: l, value: l })),
+        },
+        { ...channelOpt, description: 'Optional channel override', required: false },
       ],
     },
     {
       name: 'setroles',
-      description: 'Admin: set alert roles + role-panel channel',
+      description: 'Admin: set alert roles + role-panel channel, then post the panel',
       ...admin,
       options: [
         roleOpt('nfl', 'NFL Alerts role'),
@@ -76,52 +111,89 @@ async function registerDiscordBot() {
         roleOpt('nba', 'NBA Alerts role'),
         roleOpt('nhl', 'NHL Alerts role'),
         roleOpt('all', 'All Sports role'),
-        Object.assign({}, channelOpt, { name: 'panel', description: 'Channel for the role self-assign panel' }),
+        { ...channelOpt, name: 'panel', description: 'Channel for the role self-assign panel' },
       ],
     },
     {
-      name: 'resetchannel',
-      description: 'Admin: delete messages in a channel (fast)',
+      name: 'wipeallchannel',
+      description: 'Admin: wipe messages in ALL channels set in /config (league + alerts + tracker + stats)',
       ...admin,
-      options: [Object.assign({}, channelOpt, { required: true, description: 'Channel to clear' })],
+    },
+    {
+      name: 'resetchannel',
+      description: 'Admin: delete messages in a channel',
+      ...admin,
+      options: [{ ...channelOpt, required: true }],
+    },
+    {
+      name: 'testalert',
+      description: 'Admin: send a sample LIVE GAME ALERT',
+      ...admin,
+      options: [{ ...channelOpt, description: 'Override alert channel' }],
+    },
+    {
+      name: 'testresult',
+      description: 'Admin: send a sample result tracker table',
+      ...admin,
+      options: [{ ...channelOpt, description: 'Override tracker channel' }],
+    },
+    {
+      name: 'teststat',
+      description: 'Admin: send a sample stat breakdown',
+      ...admin,
+      options: [{ ...channelOpt, description: 'Override stats channel' }],
+    },
+    {
+      name: 'run',
+      description: 'Run HelpBet tools on one game',
+      dm_permission: false,
+      options: [{ type: 3, name: 'game', description: 'Pick a game', required: true, autocomplete: true }],
     },
   ];
 
   const putUrl = guild
-    ? 'https://discord.com/api/v10/applications/' + appId + '/guilds/' + guild + '/commands'
-    : 'https://discord.com/api/v10/applications/' + appId + '/commands';
+    ? `https://discord.com/api/v10/applications/${appId}/guilds/${guild}/commands`
+    : `https://discord.com/api/v10/applications/${appId}/commands`;
 
   const putRes = await fetch(putUrl, {
     method: 'PUT',
-    headers: headers,
+    headers,
     body: JSON.stringify(commands),
   });
   const putText = await putRes.text();
   let putJson;
-  try { putJson = JSON.parse(putText); } catch (e) { putJson = putText; }
+  try {
+    putJson = JSON.parse(putText);
+  } catch {
+    putJson = putText;
+  }
   if (!putRes.ok) {
-    return { ok: false, error: 'commands PUT ' + putRes.status, detail: putJson, appId: appId, guild: guild || null };
+    return { ok: false, error: `commands PUT ${putRes.status}`, detail: putJson, appId, guild: guild || null };
   }
 
-  const endpoint = base + '/api/discord-interactions';
+  const endpoint = `${base}/api/discord-interactions`;
   const patchRes = await fetch('https://discord.com/api/v10/applications/@me', {
     method: 'PATCH',
-    headers: headers,
+    headers,
     body: JSON.stringify({ interactions_endpoint_url: endpoint }),
   });
   const patchText = await patchRes.text();
   let patchJson;
-  try { patchJson = JSON.parse(patchText); } catch (e) { patchJson = patchText; }
+  try {
+    patchJson = JSON.parse(patchText);
+  } catch {
+    patchJson = patchText;
+  }
 
   return {
     ok: true,
-    appId: appId,
+    appId,
     guild: guild || 'global',
-    commands: Array.isArray(putJson) ? putJson.map(function(c) { return c.name; }) : putJson,
-    endpoint: endpoint,
+    commands: Array.isArray(putJson) ? putJson.map((c) => c.name) : putJson,
+    endpoint,
     endpoint_set: patchRes.ok,
     endpoint_detail: patchRes.ok ? endpoint : patchJson,
-    note: 'Registered: test, login, config, send, setroles, resetchannel. wipeallchannel removed.',
+    note: 'Admin cmds need Manage Server. /send posts best picks by league + day range. /wipeallchannel clears all /config channels.',
   };
 }
 
@@ -155,7 +227,7 @@ export default async function handler(req, res) {
 
   const auth = req.headers.authorization || '';
   const cronSecret = process.env.CRON_SECRET;
-  if (cronSecret && auth !== 'Bearer ' + cronSecret) {
+  if (cronSecret && auth !== `Bearer ${cronSecret}`) {
     if (req.headers['x-vercel-cron'] !== '1') return res.status(401).json({ error: 'Unauthorized' });
   }
 
@@ -163,29 +235,59 @@ export default async function handler(req, res) {
   const out = { at: new Date().toISOString(), steps: {} };
 
   try {
-    const g = await fetch(base + '/api/games?sport=ALL');
-    out.steps.games = { status: g.status };
+    const s = await fetch(`${base}/api/settle`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: '{}',
+    });
+    out.steps.settle = await s.json().catch(() => ({}));
+  } catch (e) {
+    out.steps.settle = { error: e.message };
+  }
+
+  try {
+    const g = await fetch(`${base}/api/games?sport=ALL`);
+    out.steps.games = { status: g.status, ...(await g.json().catch(() => ({}))) };
   } catch (e) {
     out.steps.games = { error: e.message };
   }
 
   try {
-    const b = await fetch(base + '/api/best-bets?persist=1&min_confidence=0.45&limit=80');
-    out.steps.best_bets = await b.json().catch(function() { return {}; });
+    const b = await fetch(`${base}/api/best-bets?persist=1&min_confidence=0.45&limit=80`);
+    out.steps.best_bets = await b.json().catch(() => ({}));
   } catch (e) {
     out.steps.best_bets = { error: e.message };
   }
 
   try {
-    const n = await fetch(base + '/api/notify', {
+    const n = await fetch(`${base}/api/notify`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ all_users: true, title: 'HelpBet · Daily — all bets for today' }),
     });
-    out.steps.notify = await n.json().catch(function() { return {}; });
+    out.steps.notify = await n.json().catch(() => ({}));
   } catch (e) {
     out.steps.notify = { error: e.message };
   }
 
-  return res.status(200).json(Object.assign({ ok: true }, out));
+  try {
+    const key = (await import('node:crypto'))
+      .createHash('sha256')
+      .update(String(process.env.DISCORD_BOT_TOKEN || 'none'))
+      .digest('hex')
+      .slice(0, 40);
+    const pa = await fetch(`${base}/api/notify?route=postall`, { headers: { 'x-hb-internal': key } });
+    out.steps.postall = await pa.json().catch(() => ({}));
+  } catch (e) {
+    out.steps.postall = { error: e.message };
+  }
+
+  try {
+    const f = await fetch(`${base}/api/notify?route=tick`);
+    out.steps.finalize = await f.json().catch(() => ({}));
+  } catch (e) {
+    out.steps.finalize = { error: e.message };
+  }
+
+  return res.status(200).json({ ok: true, ...out });
 }
