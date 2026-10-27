@@ -4,6 +4,7 @@
   "framework": "vite",
   "functions": {
     "api/notify.js": { "maxDuration": 60 },
+    "api/send-days.js": { "maxDuration": 60 },
     "api/best-bets.js": { "maxDuration": 60 },
     "api/games.js": { "maxDuration": 30 },
     "api/cron.js": { "maxDuration": 60 }
