@@ -36,7 +36,6 @@ async function readBody(req) {
   } catch { return {}; }
 }
 
-/** Reply after a type-5 defer: prefer edit @original, fall back to follow-up. */
 async function finish(it, payload) {
   const body = typeof payload === 'string' ? { content: String(payload).slice(0, 1900) } : payload;
   try {
@@ -46,7 +45,7 @@ async function finish(it, payload) {
     try {
       await followUp(it, body);
     } catch (e2) {
-      console.error('finish failed', String(e1?.message || e1), String(e2?.message || e2));
+      console.error('finish failed', String(e1 && e1.message || e1), String(e2 && e2.message || e2));
     }
   }
 }
@@ -59,7 +58,6 @@ function ack(res, content) {
 }
 
 function defer(res) {
-  // type 5 = deferred channel message; flags 64 = ephemeral
   return res.status(200).json({ type: 5, data: { flags: 64 } });
 }
 
@@ -71,7 +69,7 @@ export default async function handler(req, res) {
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-Signature-Ed25519, X-Signature-Timestamp');
   if (req.method === 'OPTIONS') return res.status(200).end();
 
-  const route = String(req.query?.route || '');
+  const route = String(req.query && req.query.route || '');
   let it = {};
   if (req.method === 'POST') {
     try { it = await readBody(req); } catch { it = {}; }
@@ -82,21 +80,17 @@ export default async function handler(req, res) {
     String(req.url || '').includes('discord-interactions') ||
     (it && typeof it.type === 'number' && it.type >= 1 && it.type <= 5);
 
-  // --- Discord interactions ---
   if (isDiscord && it && typeof it.type === 'number') {
-    // PING
     if (it.type === 1) return res.status(200).json({ type: 1 });
 
     const guildId = it.guild_id || GUILD();
 
-    // --- SLASH COMMANDS (type 2) ---
     if (it.type === 2) {
-      const name = it.data?.name;
-      const opt = (n) => (it.data?.options || []).find((x) => x.name === n)?.value;
+      const name = it.data && it.data.name;
+      const opt = (n) => ((it.data && it.data.options) || []).find((x) => x.name === n) && ((it.data && it.data.options) || []).find((x) => x.name === n).value;
 
-      // Fast commands: answer immediately (no defer) so Discord never sits on "thinking"
       if (name === 'test') {
-        return ack(res, `✅ HelpBet online · guild \`${guildId || 'none'}\`);
+        return ack(res, 'HelpBet online · guild ' + (guildId || 'none'));
       }
 
       if (name === 'config') {
@@ -104,16 +98,16 @@ export default async function handler(req, res) {
         try {
           const cfg = await loadCfg(guildId);
           for (const L of LEAGUE_KEYS) {
-            const v = opt(`ch_${L}`) || opt(L.toLowerCase());
-            if (v) cfg[`ch_${L}`] = v;
+            const v = opt('ch_' + L) || opt(L.toLowerCase());
+            if (v) cfg['ch_' + L] = v;
           }
           for (const k of ['tracker', 'stats', 'alerts', 'roles_panel']) {
             if (opt(k)) cfg[k] = opt(k);
           }
           await saveCfg(guildId, cfg);
-          const lines = LEAGUE_KEYS.map((L) => `**${L}:** ${cfg[`ch_${L}`] ? `<#${cfg[`ch_${L}`]}>` : '_not set_'}`);
-          lines.push(`**Tracker:** ${cfg.tracker ? `<#${cfg.tracker}>` : '_not set_'}`);
-          lines.push(`**Alerts:** ${cfg.alerts ? `<#${cfg.alerts}>` : '_not set_'}`);
+          const lines = LEAGUE_KEYS.map((L) => '**' + L + ':** ' + (cfg['ch_' + L] ? '<#' + cfg['ch_' + L] + '>' : '_not set_'));
+          lines.push('**Tracker:** ' + (cfg.tracker ? '<#' + cfg.tracker + '>' : '_not set_'));
+          lines.push('**Alerts:** ' + (cfg.alerts ? '<#' + cfg.alerts + '>' : '_not set_'));
           return res.status(200).json({
             type: 4,
             data: {
@@ -122,7 +116,7 @@ export default async function handler(req, res) {
             },
           });
         } catch (e) {
-          return ack(res, `Config error: ${String(e.message || e).slice(0, 120)}`);
+          return ack(res, 'Config error: ' + String(e.message || e).slice(0, 120));
         }
       }
 
@@ -131,15 +125,15 @@ export default async function handler(req, res) {
         try {
           const cfg = await loadCfg(guildId);
           for (const L of LEAGUE_KEYS) {
-            const v = opt(`role_${L}`) || opt(L.toLowerCase());
-            if (v) cfg[`role_${L}`] = v;
+            const v = opt('role_' + L) || opt(L.toLowerCase());
+            if (v) cfg['role_' + L] = v;
           }
           if (opt('role_ALL') || opt('all')) cfg.role_ALL = opt('role_ALL') || opt('all');
           if (opt('alert_role')) cfg.alert_role = opt('alert_role');
           await saveCfg(guildId, cfg);
           return ack(res, 'Roles saved.');
         } catch (e) {
-          return ack(res, `setroles error: ${String(e.message || e).slice(0, 120)}`);
+          return ack(res, 'setroles error: ' + String(e.message || e).slice(0, 120));
         }
       }
 
@@ -148,57 +142,53 @@ export default async function handler(req, res) {
         const password = opt('password');
         if (!username || !password) return ack(res, 'Need username + password.');
         try {
-          const r = await fetch(`${BASE()}/api/auth`, {
+          const r = await fetch(BASE() + '/api/auth', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ action: 'login', username, password }),
+            body: JSON.stringify({ action: 'login', username: username, password: password }),
           });
-          const data = await r.json().catch(() => ({}));
+          const data = await r.json().catch(function() { return {}; });
           if (!r.ok) return ack(res, data.error || 'Login failed');
           try {
             await sb('user_settings', {
               method: 'POST',
               prefer: 'resolution=merge-duplicates,return=minimal',
-              body: { username, notify_config: { linked_guild_id: guildId, linked_at: new Date().toISOString() } },
+              body: { username: username, notify_config: { linked_guild_id: guildId, linked_at: new Date().toISOString() } },
             });
-          } catch {}
-          return ack(res, `Linked **${username}** to this server.`);
+          } catch (e) {}
+          return ack(res, 'Linked **' + username + '** to this server.');
         } catch (e) {
-          return ack(res, `Login error: ${String(e.message || e).slice(0, 100)}`);
+          return ack(res, 'Login error: ' + String(e.message || e).slice(0, 100));
         }
       }
 
-      // Slow commands: defer first, then edit original (clears "thinking")
       if (name === 'wipeallchannel') {
         if (!isAdmin(it)) return ack(res, 'Admin only.');
         defer(res);
         try {
           const cfg = await loadCfg(guildId);
           const channels = new Set();
-          for (const L of LEAGUE_KEYS) if (cfg[`ch_${L}`]) channels.add(String(cfg[`ch_${L}`]));
+          for (const L of LEAGUE_KEYS) if (cfg['ch_' + L]) channels.add(String(cfg['ch_' + L]));
           for (const k of ['tracker', 'stats', 'alerts']) if (cfg[k]) channels.add(String(cfg[k]));
           const one = opt('channel');
-          if (one) {
-            channels.clear();
-            channels.add(String(one));
-          }
+          if (one) { channels.clear(); channels.add(String(one)); }
           if (it.channel_id) channels.add(String(it.channel_id));
           if (!channels.size) {
             await finish(it, 'No channels found. Set them with /config or run this in a channel.');
             return;
           }
-          await finish(it, `Wiping **${channels.size}** channel(s)…`);
+          await finish(it, 'Wiping **' + channels.size + '** channel(s)…');
           const results = [];
           for (const ch of channels) {
             try {
-              results.push(`<#${ch}>: **${await wipeChannel(ch)}** msgs`);
+              results.push('<#' + ch + '>: **' + (await wipeChannel(ch)) + '** msgs');
             } catch (e) {
-              results.push(`<#${ch}>: ${String(e.message || e).slice(0, 50)}`);
+              results.push('<#' + ch + '>: ' + String(e.message || e).slice(0, 50));
             }
           }
-          await finish(it, `**Wipe done**\n${results.join('\n')}`);
+          await finish(it, '**Wipe done**\n' + results.join('\n'));
         } catch (e) {
-          await finish(it, `Wipe error: ${String(e.message || e).slice(0, 150)}`);
+          await finish(it, 'Wipe error: ' + String(e.message || e).slice(0, 150));
         }
         return;
       }
@@ -209,50 +199,49 @@ export default async function handler(req, res) {
         try {
           const daysChoice = String(opt('days') || 'today_and_tomorrow');
           const now = new Date();
-          const ct = (off) =>
-            new Date(now.getTime() + off * 86400000).toLocaleDateString('en-CA', { timeZone: 'America/Chicago' });
+          const ct = function(off) {
+            return new Date(now.getTime() + off * 86400000).toLocaleDateString('en-CA', { timeZone: 'America/Chicago' });
+          };
           let dates = [ct(0)];
           if (daysChoice === 'today_and_tomorrow') dates = [ct(0), ct(1)];
           else if (daysChoice === 'next_3') dates = [ct(0), ct(1), ct(2)];
-          const r = await fetch(`${BASE()}/api/send-days`, {
+          const r = await fetch(BASE() + '/api/send-days', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ dates, force: true }),
+            body: JSON.stringify({ dates: dates, force: true }),
           });
-          const data = await r.json().catch(() => ({}));
-          await finish(it, data.message || (r.ok ? 'Sent.' : `Error: ${data.error || r.status}`));
+          const data = await r.json().catch(function() { return {}; });
+          await finish(it, data.message || (r.ok ? 'Sent.' : 'Error: ' + (data.error || r.status)));
         } catch (e) {
-          await finish(it, `Send failed: ${String(e.message || e).slice(0, 120)}`);
+          await finish(it, 'Send failed: ' + String(e.message || e).slice(0, 120));
         }
         return;
       }
 
-      return ack(res, `Unknown command: **/${name || '?'}**`);
+      return ack(res, 'Unknown command: /' + (name || '?'));
     }
 
-    // --- COMPONENTS (type 3) ---
     if (it.type === 3) {
-      const cid = String(it.data?.custom_id || '');
+      const cid = String((it.data && it.data.custom_id) || '');
       const parts = cid.split('|');
 
-      if (cid.startsWith('role|')) {
+      if (cid.indexOf('role|') === 0) {
         const roleId = (await loadCfg(guildId))[parts[1]];
         if (!roleId) return ack(res, 'Role not set. /setroles');
-        const memberId = it.member?.user?.id || it.user?.id;
+        const memberId = (it.member && it.member.user && it.member.user.id) || (it.user && it.user.id);
         try {
-          if ((it.member?.roles || []).includes(roleId)) {
-            await botApi('DELETE', `/guilds/${guildId}/members/${memberId}/roles/${roleId}`);
-            return ack(res, `Removed <@&${roleId}>`);
+          if (((it.member && it.member.roles) || []).indexOf(roleId) >= 0) {
+            await botApi('DELETE', '/guilds/' + guildId + '/members/' + memberId + '/roles/' + roleId);
+            return ack(res, 'Removed <@&' + roleId + '>');
           }
-          await botApi('PUT', `/guilds/${guildId}/members/${memberId}/roles/${roleId}`);
-          return ack(res, `Added <@&${roleId}>`);
+          await botApi('PUT', '/guilds/' + guildId + '/members/' + memberId + '/roles/' + roleId);
+          return ack(res, 'Added <@&' + roleId + '>');
         } catch (e) {
-          return ack(res, `Role error: ${String(e.message || e).slice(0, 80)}`);
+          return ack(res, 'Role error: ' + String(e.message || e).slice(0, 80));
         }
       }
 
-      if (cid.startsWith('pp|')) {
-        // Defer update (type 6) — keeps the message, we then edit it
+      if (cid.indexOf('pp|') === 0) {
         res.status(200).json({ type: 6 });
         try {
           const act = parts[1];
@@ -262,9 +251,9 @@ export default async function handler(req, res) {
           const props = Array.isArray(data.props) ? data.props : [];
           let payload;
           if (act === 'load') payload = categorySelect(gid, props);
-          else if (act === 'cat') payload = playerSelect(gid, props, (it.data?.values && it.data.values[0]) || 'Other');
+          else if (act === 'cat') payload = playerSelect(gid, props, (it.data && it.data.values && it.data.values[0]) || 'Other');
           else if (act === 'allpl') payload = playerSelect(gid, props, 'ALL');
-          else if (act === 'pl') payload = playerBetsPayload(gid, props, dec(it.data?.values?.[0] || parts[3] || ''));
+          else if (act === 'pl') payload = playerBetsPayload(gid, props, dec((it.data && it.data.values && it.data.values[0]) || parts[3] || ''));
           else if (act === 'plshow') payload = playerBetsPayload(gid, props, dec(parts[3] || ''));
           else if (act === 'best') payload = bestPickPayload(gid, props, dec(parts[3] || ''));
           else if (act === 'top') payload = topPlaysPayload(gid, data);
@@ -272,8 +261,8 @@ export default async function handler(req, res) {
           await editOriginal(it, payload);
         } catch (e) {
           try {
-            await editOriginal(it, { content: `Props error: ${String(e.message || e).slice(0, 150)}` });
-          } catch {}
+            await editOriginal(it, { content: 'Props error: ' + String(e.message || e).slice(0, 150) });
+          } catch (e2) {}
         }
         return;
       }
@@ -284,16 +273,15 @@ export default async function handler(req, res) {
     return ack(res, 'OK');
   }
 
-  // --- Non-Discord POST: proxy to send-days ---
   if (req.method === 'POST') {
     try {
       const body = it && Object.keys(it).length ? it : await readBody(req);
-      const r = await fetch(`${BASE()}/api/send-days`, {
+      const r = await fetch(BASE() + '/api/send-days', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ ...body, force: true }),
+        body: JSON.stringify(Object.assign({}, body, { force: true })),
       });
-      const data = await r.json().catch(() => ({}));
+      const data = await r.json().catch(function() { return {}; });
       return res.status(r.ok ? 200 : 500).json(data);
     } catch (e) {
       return res.status(500).json({ error: e.message || String(e) });
