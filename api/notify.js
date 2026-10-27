@@ -2,30 +2,31 @@ import {
   enc, dec, parseGid, categorySelect, playerSelect, playerBetsPayload, bestPickPayload, topPlaysPayload,
 } from './_props_ui.js';
 import {
-  GUILD, BASE, LEAGUE_KEYS, botApi, loadCfg, saveCfg, isAdmin, text, followUp, editOriginal, wipeChannel, sb,
+  GUILD, BASE, LEAGUE_KEYS, botApi, loadCfg, saveCfg, isAdmin, followUp, editOriginal, wipeChannel, clearChannelMessages, sb,
 } from './_bot_util.js';
 
 async function resolveGame(gid) {
   const { sport, gameId } = parseGid(gid);
   try {
-    const r = await fetch(`${BASE()}/api/games?sport=${encodeURIComponent(sport || 'ALL')}`);
-    const d = await r.json().catch(() => ({}));
+    const r = await fetch(BASE() + '/api/games?sport=' + encodeURIComponent(sport || 'ALL'));
+    const d = await r.json().catch(function() { return {}; });
     const games = Array.isArray(d.games) ? d.games : [];
-    const g = games.find((x) => String(x.id) === String(gameId)) || games.find((x) => String(x.id).includes(String(gameId)));
+    const g = games.find(function(x) { return String(x.id) === String(gameId); })
+      || games.find(function(x) { return String(x.id).includes(String(gameId)); });
     if (g) return { sport: String(g.sport || sport).toUpperCase(), home: g.home_team, away: g.away_team, id: g.id };
-  } catch {}
-  return { sport, home: '', away: '', id: gameId };
+  } catch (e) {}
+  return { sport: sport, home: '', away: '', id: gameId };
 }
 
 async function loadProps(game) {
   const q = new URLSearchParams({ sport: game.sport || '', home: game.home || '', away: game.away || '' });
-  const r = await fetch(`${BASE()}/api/props?${q}`);
-  return r.json().catch(() => ({ props: [], top_plays: [] }));
+  const r = await fetch(BASE() + '/api/props?' + q);
+  return r.json().catch(function() { return { props: [], top_plays: [] }; });
 }
 
 async function readBody(req) {
   if (typeof req.body === 'string' && req.body) {
-    try { return JSON.parse(req.body); } catch { return {}; }
+    try { return JSON.parse(req.body); } catch (e) { return {}; }
   }
   if (req.body && typeof req.body === 'object') return req.body;
   try {
@@ -33,7 +34,7 @@ async function readBody(req) {
     for await (const c of req) chunks.push(c);
     const raw = Buffer.concat(chunks).toString('utf8');
     return raw ? JSON.parse(raw) : {};
-  } catch { return {}; }
+  } catch (e) { return {}; }
 }
 
 async function finish(it, payload) {
@@ -61,6 +62,13 @@ function defer(res) {
   return res.status(200).json({ type: 5, data: { flags: 64 } });
 }
 
+function formatWipeResult(ch, r) {
+  let line = '<#' + ch + '>: **' + r.deleted + '** deleted';
+  if (r.remaining > 0) line += ' · ~' + r.remaining + ' left';
+  if (r.errors && r.errors.length) line += '\n  ⚠ ' + r.errors[0];
+  return line;
+}
+
 export const config = { api: { bodyParser: false } };
 
 export default async function handler(req, res) {
@@ -69,10 +77,10 @@ export default async function handler(req, res) {
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-Signature-Ed25519, X-Signature-Timestamp');
   if (req.method === 'OPTIONS') return res.status(200).end();
 
-  const route = String(req.query && req.query.route || '');
+  const route = String((req.query && req.query.route) || '');
   let it = {};
   if (req.method === 'POST') {
-    try { it = await readBody(req); } catch { it = {}; }
+    try { it = await readBody(req); } catch (e) { it = {}; }
   }
 
   const isDiscord =
@@ -87,7 +95,10 @@ export default async function handler(req, res) {
 
     if (it.type === 2) {
       const name = it.data && it.data.name;
-      const opt = (n) => ((it.data && it.data.options) || []).find((x) => x.name === n) && ((it.data && it.data.options) || []).find((x) => x.name === n).value;
+      const opt = function(n) {
+        const o = ((it.data && it.data.options) || []).find(function(x) { return x.name === n; });
+        return o ? o.value : undefined;
+      };
 
       if (name === 'test') {
         return ack(res, 'HelpBet online · guild ' + (guildId || 'none'));
@@ -97,15 +108,19 @@ export default async function handler(req, res) {
         if (!isAdmin(it)) return ack(res, 'Admin only.');
         try {
           const cfg = await loadCfg(guildId);
-          for (const L of LEAGUE_KEYS) {
+          for (let i = 0; i < LEAGUE_KEYS.length; i++) {
+            const L = LEAGUE_KEYS[i];
             const v = opt('ch_' + L) || opt(L.toLowerCase());
             if (v) cfg['ch_' + L] = v;
           }
-          for (const k of ['tracker', 'stats', 'alerts', 'roles_panel']) {
-            if (opt(k)) cfg[k] = opt(k);
+          const keys = ['tracker', 'stats', 'alerts', 'roles_panel'];
+          for (let i = 0; i < keys.length; i++) {
+            if (opt(keys[i])) cfg[keys[i]] = opt(keys[i]);
           }
           await saveCfg(guildId, cfg);
-          const lines = LEAGUE_KEYS.map((L) => '**' + L + ':** ' + (cfg['ch_' + L] ? '<#' + cfg['ch_' + L] + '>' : '_not set_'));
+          const lines = LEAGUE_KEYS.map(function(L) {
+            return '**' + L + ':** ' + (cfg['ch_' + L] ? '<#' + cfg['ch_' + L] + '>' : '_not set_');
+          });
           lines.push('**Tracker:** ' + (cfg.tracker ? '<#' + cfg.tracker + '>' : '_not set_'));
           lines.push('**Alerts:** ' + (cfg.alerts ? '<#' + cfg.alerts + '>' : '_not set_'));
           return res.status(200).json({
@@ -124,12 +139,14 @@ export default async function handler(req, res) {
         if (!isAdmin(it)) return ack(res, 'Admin only.');
         try {
           const cfg = await loadCfg(guildId);
-          for (const L of LEAGUE_KEYS) {
+          for (let i = 0; i < LEAGUE_KEYS.length; i++) {
+            const L = LEAGUE_KEYS[i];
             const v = opt('role_' + L) || opt(L.toLowerCase());
             if (v) cfg['role_' + L] = v;
           }
           if (opt('role_ALL') || opt('all')) cfg.role_ALL = opt('role_ALL') || opt('all');
           if (opt('alert_role')) cfg.alert_role = opt('alert_role');
+          if (opt('panel')) cfg.roles_panel = opt('panel');
           await saveCfg(guildId, cfg);
           return ack(res, 'Roles saved.');
         } catch (e) {
@@ -153,7 +170,10 @@ export default async function handler(req, res) {
             await sb('user_settings', {
               method: 'POST',
               prefer: 'resolution=merge-duplicates,return=minimal',
-              body: { username: username, notify_config: { linked_guild_id: guildId, linked_at: new Date().toISOString() } },
+              body: {
+                username: username,
+                notify_config: { linked_guild_id: guildId, linked_at: new Date().toISOString() },
+              },
             });
           } catch (e) {}
           return ack(res, 'Linked **' + username + '** to this server.');
@@ -162,31 +182,74 @@ export default async function handler(req, res) {
         }
       }
 
+      // /resetchannel — wipe ONE channel (required option)
+      if (name === 'resetchannel') {
+        if (!isAdmin(it)) return ack(res, 'Admin only (Manage Server).');
+        const channel = opt('channel') || it.channel_id;
+        if (!channel) return ack(res, 'Pick a channel.');
+        defer(res);
+        try {
+          const r = await wipeChannel(String(channel));
+          let msg = '**Reset <#' + channel + '>**\nDeleted **' + r.deleted + '** messages.';
+          if (r.remaining > 0) msg += '\n~' + r.remaining + ' still visible (may need another run).';
+          if (r.errors && r.errors.length) msg += '\n⚠ ' + r.errors.join('\n⚠ ');
+          if (r.deleted === 0 && (!r.errors || !r.errors.length)) {
+            msg = '<#' + channel + '> was already empty (or bot cannot see messages).';
+          }
+          await finish(it, msg);
+        } catch (e) {
+          await finish(it, 'Reset failed: ' + String(e.message || e).slice(0, 150));
+        }
+        return;
+      }
+
+      // /wipeallchannel — wipe every channel saved in /config
       if (name === 'wipeallchannel') {
-        if (!isAdmin(it)) return ack(res, 'Admin only.');
+        if (!isAdmin(it)) return ack(res, 'Admin only (Manage Server).');
         defer(res);
         try {
           const cfg = await loadCfg(guildId);
           const channels = new Set();
-          for (const L of LEAGUE_KEYS) if (cfg['ch_' + L]) channels.add(String(cfg['ch_' + L]));
-          for (const k of ['tracker', 'stats', 'alerts']) if (cfg[k]) channels.add(String(cfg[k]));
+          for (let i = 0; i < LEAGUE_KEYS.length; i++) {
+            const L = LEAGUE_KEYS[i];
+            if (cfg['ch_' + L]) channels.add(String(cfg['ch_' + L]));
+          }
+          const extra = ['tracker', 'stats', 'alerts', 'roles_panel'];
+          for (let i = 0; i < extra.length; i++) {
+            if (cfg[extra[i]]) channels.add(String(cfg[extra[i]]));
+          }
+          // Optional single-channel override if Discord ever adds the option
           const one = opt('channel');
-          if (one) { channels.clear(); channels.add(String(one)); }
+          if (one) {
+            channels.clear();
+            channels.add(String(one));
+          }
+          // Always include the channel the command was run in
           if (it.channel_id) channels.add(String(it.channel_id));
+
           if (!channels.size) {
-            await finish(it, 'No channels found. Set them with /config or run this in a channel.');
+            await finish(it, 'No channels found. Set them with **/config** first, or run this inside a channel.');
             return;
           }
-          await finish(it, 'Wiping **' + channels.size + '** channel(s)…');
+
+          await finish(it, 'Wiping **' + channels.size + '** channel(s)… (this can take a minute)');
           const results = [];
-          for (const ch of channels) {
+          let total = 0;
+          const list = Array.from(channels);
+          for (let i = 0; i < list.length; i++) {
+            const ch = list[i];
             try {
-              results.push('<#' + ch + '>: **' + (await wipeChannel(ch)) + '** msgs');
+              const r = await wipeChannel(ch);
+              total += r.deleted;
+              results.push(formatWipeResult(ch, r));
             } catch (e) {
-              results.push('<#' + ch + '>: ' + String(e.message || e).slice(0, 50));
+              results.push('<#' + ch + '>: ' + String(e.message || e).slice(0, 80));
             }
           }
-          await finish(it, '**Wipe done**\n' + results.join('\n'));
+          await finish(
+            it,
+            '**Wipe done** · **' + total + '** messages deleted across ' + list.length + ' channel(s)\n' + results.join('\n')
+          );
         } catch (e) {
           await finish(it, 'Wipe error: ' + String(e.message || e).slice(0, 150));
         }
@@ -200,11 +263,15 @@ export default async function handler(req, res) {
           const daysChoice = String(opt('days') || 'today_and_tomorrow');
           const now = new Date();
           const ct = function(off) {
-            return new Date(now.getTime() + off * 86400000).toLocaleDateString('en-CA', { timeZone: 'America/Chicago' });
+            return new Date(now.getTime() + off * 86400000).toLocaleDateString('en-CA', {
+              timeZone: 'America/Chicago',
+            });
           };
           let dates = [ct(0)];
           if (daysChoice === 'today_and_tomorrow') dates = [ct(0), ct(1)];
           else if (daysChoice === 'next_3') dates = [ct(0), ct(1), ct(2)];
+          else if (daysChoice === 'today') dates = [ct(0)];
+          else if (daysChoice === 'tomorrow') dates = [ct(1)];
           const r = await fetch(BASE() + '/api/send-days', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
@@ -221,6 +288,7 @@ export default async function handler(req, res) {
       return ack(res, 'Unknown command: /' + (name || '?'));
     }
 
+    // Components (buttons / selects)
     if (it.type === 3) {
       const cid = String((it.data && it.data.custom_id) || '');
       const parts = cid.split('|');
@@ -251,10 +319,12 @@ export default async function handler(req, res) {
           const props = Array.isArray(data.props) ? data.props : [];
           let payload;
           if (act === 'load') payload = categorySelect(gid, props);
-          else if (act === 'cat') payload = playerSelect(gid, props, (it.data && it.data.values && it.data.values[0]) || 'Other');
-          else if (act === 'allpl') payload = playerSelect(gid, props, 'ALL');
-          else if (act === 'pl') payload = playerBetsPayload(gid, props, dec((it.data && it.data.values && it.data.values[0]) || parts[3] || ''));
-          else if (act === 'plshow') payload = playerBetsPayload(gid, props, dec(parts[3] || ''));
+          else if (act === 'cat') {
+            payload = playerSelect(gid, props, (it.data && it.data.values && it.data.values[0]) || 'Other');
+          } else if (act === 'allpl') payload = playerSelect(gid, props, 'ALL');
+          else if (act === 'pl') {
+            payload = playerBetsPayload(gid, props, dec((it.data && it.data.values && it.data.values[0]) || parts[3] || ''));
+          } else if (act === 'plshow') payload = playerBetsPayload(gid, props, dec(parts[3] || ''));
           else if (act === 'best') payload = bestPickPayload(gid, props, dec(parts[3] || ''));
           else if (act === 'top') payload = topPlaysPayload(gid, data);
           else payload = { content: 'Unknown props action.' };
@@ -288,5 +358,5 @@ export default async function handler(req, res) {
     }
   }
 
-  return res.status(200).json({ ok: true, service: 'notify', fixed: true });
+  return res.status(200).json({ ok: true, service: 'notify', fixed: true, wipe: 'v2' });
 }
