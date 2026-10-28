@@ -1,4 +1,4 @@
-/** HelpBet notify — load concatenated plain JS parts np0..npN */
+/** HelpBet notify — load concatenated plain JS parts np0..npN (production) */
 import { readFileSync, writeFileSync, existsSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -7,7 +7,7 @@ const cache = join('/tmp', 'hb_notify_plain.mjs');
 function loadCode() {
   if (existsSync(cache)) { try { return readFileSync(cache, 'utf8'); } catch {} }
   let code = '';
-  for (let i = 0; i < 16; i++) {
+  for (let i = 0; i < 8; i++) {
     const p = join(dir, `np${i}.js`);
     if (!existsSync(p)) break;
     code += readFileSync(p, 'utf8');
@@ -18,6 +18,6 @@ function loadCode() {
 }
 const code = loadCode();
 try { writeFileSync(cache, code); } catch {}
-const mod = await import(pathToFileURL(cache).href + '?v=10');
+const mod = await import(pathToFileURL(cache).href + '?v=11');
 export default mod.default;
 export const config = mod.config || { api: { bodyParser: false } };
