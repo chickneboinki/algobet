@@ -83,10 +83,10 @@ export default function App() {
       <header className="app-header">
         <div className="flex items-center justify-between gap-3">
           <div className="brand-block flex items-center gap-3">
-            <div className="brand-mark">H</div>
+            <div className="brand-mark">L</div>
             <div>
-              <h1 className="brand-name leading-tight">HelpBet</h1>
-              <p className="text-[12px] text-zinc-400 leading-none mt-0.5">Find value. Track results.</p>
+              <h1 className="brand-name leading-tight">LeanLab</h1>
+              <p className="text-[12px] text-zinc-400 leading-none mt-0.5">Find the lean. Track the edge.</p>
             </div>
           </div>
           <Link to="/setup" className="account-chip">
@@ -114,10 +114,10 @@ export default function App() {
 
       <nav className="nav-bar" aria-label="Main">
         <div className="side-brand">
-          <div className="brand-mark">H</div>
+          <div className="brand-mark">L</div>
           <div>
-            <div className="brand-name leading-tight">HelpBet</div>
-            <div className="text-[12px] text-zinc-400 leading-none mt-1 whitespace-nowrap">Find value.</div>
+            <div className="brand-name leading-tight">LeanLab</div>
+            <div className="text-[12px] text-zinc-400 leading-none mt-1 whitespace-nowrap">Find the lean.</div>
           </div>
         </div>
         <div className="nav-inner">
