@@ -125,7 +125,6 @@ function pickEmbed(p) {
       { type: 2, style: 5, label: 'DraftKings', url: 'https://sportsbook.draftkings.com' },
       { type: 2, style: 5, label: 'PrizePicks', url: 'https://prizepicks.com' },
     ]});
-    // Player props category selector
     components.push({ type: 1, components: [
       { type: 2, style: 1, label: 'Player props / stats', custom_id: `pp|open|${gid}` },
     ]});
@@ -237,7 +236,6 @@ async function sendPickTracked(channel, p, guildId, opts = {}) {
   return true;
 }
 
-/** Find pending posted picks whose game has gone final, edit the Discord message with the result, mark settled. */
 async function settlePostedPicks() {
   let pending;
   try {
