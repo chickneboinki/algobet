@@ -74,22 +74,21 @@ export default function App() {
     <div className="shell flex flex-col">
       <header className="app-header">
         <div className="flex items-center justify-between gap-3">
-          <div className="flex items-center gap-3">
-            <div className="w-8 h-8 rounded-[10px] bg-[var(--accent)] flex items-center justify-center text-[13px] font-bold text-[#06121f]">
-              H
-            </div>
+          <div className="brand-block flex items-center gap-3">
+            <div className="brand-mark">H</div>
             <div>
-              <h1 className="text-[16px] font-semibold tracking-tight leading-tight">HelpBet</h1>
-              <p className="text-[11px] text-zinc-500 leading-none mt-0.5">Find value. Track results.</p>
+              <h1 className="brand-name leading-tight">HelpBet</h1>
+              <p className="text-[12px] text-zinc-400 leading-none mt-0.5">Find value. Track results.</p>
             </div>
           </div>
-          <Link to="/setup" className="text-[11px] text-sky-400">
-            {user ? user : 'Account'}
+          <Link to="/setup" className="account-chip">
+            <i>{user ? user[0].toUpperCase() : '?'}</i>
+            {user ? user : 'Sign in'}
           </Link>
         </div>
       </header>
 
-      <main className="flex-1 overflow-y-auto pb-28 px-4 pt-4">
+      <main className="app-main flex-1 pb-28 px-4 pt-5">
         <Routes>
           <Route path="/" element={<BestBetsPage />} />
           <Route path="/games" element={<GamesPage />} />
@@ -104,8 +103,15 @@ export default function App() {
         </Routes>
       </main>
 
-      <nav className="nav-bar">
-        <div className="max-w-[480px] mx-auto grid grid-cols-5 pt-2.5 pb-2">
+      <nav className="nav-bar" aria-label="Main">
+        <div className="side-brand">
+          <div className="brand-mark">H</div>
+          <div>
+            <div className="brand-name leading-tight">HelpBet</div>
+            <div className="text-[12px] text-zinc-400 leading-none mt-1 whitespace-nowrap">Find value.</div>
+          </div>
+        </div>
+        <div className="nav-inner">
           {tabs.map((t) => (
             <NavLink
               key={t.to}
