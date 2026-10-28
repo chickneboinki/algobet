@@ -1,0 +1,24 @@
+{
+  "buildCommand": "npm run build",
+  "outputDirectory": "dist",
+  "framework": "vite",
+  "functions": {
+    "api/notify.js": { "maxDuration": 60 },
+    "api/best-bets.js": { "maxDuration": 60 },
+    "api/games.js": { "maxDuration": 30 },
+    "api/cron.js": { "maxDuration": 60 }
+  },
+  "rewrites": [
+    { "source": "/api/health", "destination": "/api/cron?route=health" },
+    { "source": "/api/discord-interactions", "destination": "/api/notify?route=interactions" },
+    { "source": "/api/discord-register", "destination": "/api/cron?route=bot-register" },
+    { "source": "/api/discord-finalize", "destination": "/api/notify?route=finalize" },
+    { "source": "/api/discord-tick", "destination": "/api/cron?route=tick" },
+    { "source": "/api/(.*)", "destination": "/api/$1" },
+    { "source": "/(.*)", "destination": "/index.html" }
+  ],
+  "crons": [
+    { "path": "/api/cron", "schedule": "0 11 * * *" },
+    { "path": "/api/discord-tick", "schedule": "*/15 * * * *" }
+  ]
+}
