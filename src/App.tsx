@@ -6,6 +6,7 @@ import AILabPage from './pages/AILabPage'
 import HistoryPage from './pages/HistoryPage'
 import WatchPage from './pages/WatchPage'
 import SettingsPage from './pages/SettingsPage'
+import LearnPage from './pages/LearnPage'
 import { loadSession } from './lib/auth'
 import { useEffect, useState } from 'react'
 
@@ -48,6 +49,12 @@ const icons: Record<string, JSX.Element> = {
       <path d="M8 6h12M8 12h12M8 18h12M4 6h.01M4 12h.01M4 18h.01" />
     </svg>
   ),
+  Learn: (
+    <svg {...stroke}>
+      <rect x="3" y="5" width="18" height="14" rx="3" />
+      <path d="M10 9.5v5l4.5-2.5L10 9.5z" />
+    </svg>
+  ),
   Setup: (
     <svg {...stroke}>
       <circle cx="12" cy="12" r="3" />
@@ -61,6 +68,7 @@ const tabs = [
   { to: '/games', label: 'Games' },
   { to: '/tools', label: 'Tools' },
   { to: '/bets', label: 'Bets' },
+  { to: '/learn', label: 'Learn' },
   { to: '/setup', label: 'Setup' },
 ]
 
@@ -96,6 +104,7 @@ export default function App() {
           <Route path="/algorithms" element={<AlgorithmsPage />} />
           <Route path="/ai" element={<AILabPage />} />
           <Route path="/watch" element={<WatchPage />} />
+          <Route path="/learn" element={<LearnPage />} />
           <Route path="/bets" element={<HistoryPage />} />
           <Route path="/history" element={<HistoryPage />} />
           <Route path="/setup" element={<SettingsPage />} />
