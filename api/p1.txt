@@ -1,0 +1,186 @@
+async function handleInteraction(req, res, raw) {
+  let it;
+  try { it = JSON.parse(raw || '{}'); } catch { return res.status(400).send('bad json'); }
+  if (it.type === 1) return res.status(200).json({ type: 1 }); // PING
+
+  const guildId = it.guild_id || GUILD();
+  const opt = (name) => {
+    const o = (it.data?.options || []).find((x) => x.name === name);
+    return o?.value;
+  };
+
+  if (it.type === 3 || (it.type === 2 && String(it.data?.custom_id || '').startsWith('pp|'))) {
+    return res.status(200).json(eph({ embeds: [{ title: 'Player props', description: 'Props UI loading — use the website for full props for now.', color: 0x38bdf8 }] }));
+  }
+
+  if (it.type === 3 && String(it.data?.custom_id || '').startsWith('role|')) {
+    const key = String(it.data.custom_id).split('|')[1];
+    const cfg = await loadCfg(guildId);
+    const roleId = cfg[key];
+    if (!roleId) return res.status(200).json(text('Role not configured. Use /setroles first.'));
+    const memberId = it.member?.user?.id || it.user?.id;
+    const has = (it.member?.roles || []).includes(roleId);
+    try {
+      if (has) {
+        await botApi('DELETE', `/guilds/${guildId}/members/${memberId}/roles/${roleId}`);
+        return res.status(200).json(text(`Removed <@&${roleId}>`));
+      }
+      await botApi('PUT', `/guilds/${guildId}/members/${memberId}/roles/${roleId}`);
+      return res.status(200).json(text(`Added <@&${roleId}>`));
+    } catch (e) {
+      return res.status(200).json(text(`Role update failed: ${e.message}`));
+    }
+  }
+
+  if (it.type !== 2) return res.status(200).json(text('Unsupported interaction'));
+
+  const name = it.data?.name;
+
+  if (name === 'config') {
+    if (!isAdmin(it)) return res.status(200).json(text('Manage Server required.'));
+    const cfg = await loadCfg(guildId);
+    const lines = CFG_ITEMS.map((c) => {
+      const v = cfg[c.key];
+      return `**${c.label}:** ${v ? (c.kind === 'channel' ? `<#${v}>` : `<@&${v}>`) : '_not set_'}`;
+    });
+    return res.status(200).json(eph({
+      embeds: [{
+        title: 'LeanLab /config',
+        description: lines.join('\n') + '\n\nUse /setroles for roles. League channels can be set via website Settings.',
+        color: 0x38bdf8,
+      }],
+    }));
+  }
+
+  if (name === 'wipeallchannel') {
+    if (!isAdmin(it)) return res.status(200).json(text('Manage Server required.'));
+    res.status(200).json({ type: 5 });
+    try {
+      const cfg = await loadCfg(guildId);
+      const ids = [];
+      for (const [k, v] of Object.entries(cfg || {})) {
+        if (!v) continue;
+        if (k.startsWith('ch_') || k === 'alerts' || k === 'tracker' || k === 'stats' || k === 'roles_panel') {
+          const id = String(v);
+          if (!ids.includes(id)) ids.push(id);
+        }
+      }
+      if (!ids.length) { await followUp(it, 'No channels set in /config to wipe.'); return; }
+      await followUp(it, `Wiping **${ids.length}** channel(s)…`);
+      let total = 0;
+      const lines = [];
+      for (const id of ids) {
+        try {
+          const n = await clearChannelMessages(id);
+          total += n;
+          lines.push(`<#${id}> ~${n}`);
+        } catch (e) {
+          lines.push(`<#${id}> fail: ${(e.message || e).toString().slice(0, 80)}`);
+        }
+        await sleep(300);
+      }
+      await followUp(it, `Done. Wiped **${ids.length}** channel(s) · ~**${total}** messages.\n${lines.join('\n')}`);
+    } catch (e) {
+      await followUp(it, `Wipe failed: ${e.message || e}`);
+    }
+    return;
+  }
+
+  if (name === 'resetchannel') {
+    if (!isAdmin(it)) return res.status(200).json(text('Manage Server required.'));
+    const channel = opt('channel');
+    if (!channel) return res.status(200).json(text('Pick a channel.'));
+    res.status(200).json({ type: 5 });
+    try {
+      const n = await clearChannelMessages(channel);
+      await followUp(it, `Cleared ~**${n}** messages in <#${channel}>.`);
+    } catch (e) {
+      await followUp(it, `Failed: ${e.message}`);
+    }
+    return;
+  }
+
+  if (name === 'setroles') {
+    if (!isAdmin(it)) return res.status(200).json(text('Manage Server required.'));
+    const cfg = await loadCfg(guildId);
+    for (const r of ROLE_PANEL_KEYS) {
+      const short = r.key.replace('role_', '').toLowerCase();
+      const v = opt(short) || opt(r.key);
+      if (v) cfg[r.key] = String(v);
+    }
+    const panel = opt('panel');
+    if (panel) cfg.roles_panel = String(panel);
+    await saveCfg(guildId, cfg);
+    let extra = '';
+    if (cfg.roles_panel) {
+      try {
+        const buttons = ROLE_PANEL_KEYS.map((r) => ({
+          type: 2, style: 1, label: r.label, custom_id: `role|${r.key}`, disabled: !cfg[r.key],
+        }));
+        const rows = [];
+        for (let i = 0; i < buttons.length; i += 5) rows.push({ type: 1, components: buttons.slice(i, i + 5) });
+        await sendChannel(cfg.roles_panel, {
+          embeds: [{ title: 'LeanLab · Role self-assign', description: 'Click a button to get the alert role for that league.', color: 0x38bdf8 }],
+          components: rows,
+        });
+        extra = ' Role panel posted.';
+      } catch (e) { extra = ` Panel error: ${e.message}`; }
+    }
+    return res.status(200).json(text('Roles saved.' + extra));
+  }
+
+  if (name === 'testalert' || name === 'testresult' || name === 'teststat') {
+    if (!isAdmin(it)) return res.status(200).json(text('Manage Server required.'));
+    const cfg = await loadCfg(guildId);
+    const ch = opt('channel') || (name === 'testalert' ? cfg.alerts : name === 'testresult' ? cfg.tracker : cfg.stats);
+    if (!ch) return res.status(200).json(text('Set the channel in /config first (or pass channel option).'));
+    const title = name === 'testalert' ? 'LIVE GAME ALERT' : name === 'testresult' ? 'Result tracker' : 'Stat breakdown';
+    await sendChannel(ch, { embeds: [{ title, description: 'Sample message from LeanLab.', color: 0x38bdf8 }] });
+    return res.status(200).json(text('Sample sent.'));
+  }
+
+  if (name === 'send' || name === 'post') {
+    if (!isAdmin(it)) return res.status(200).json(text('Manage Server required.'));
+    res.status(200).json({ type: 5 });
+    await followUp(it, 'Picks posting is being restored. Use the website Best Bets page for now.');
+    return;
+  }
+
+  if (name === 'login' || name === 'logout' || name === 'mybets' || name === 'run') {
+    return res.status(200).json(text('Account linking / tools: https://helpbet.vercel.app'));
+  }
+
+  return res.status(200).json(text(`Unknown command: ${name}`));
+}
+
+export const config = { api: { bodyParser: false } };
+
+export default async function handler(req, res) {
+  res.setHeader('Access-Control-Allow-Origin', '*');
+  if (req.method === 'OPTIONS') return res.status(200).end();
+
+  const url = new URL(req.url, 'http://localhost');
+  const route = url.searchParams.get('route');
+
+  try {
+    const raw = await readRaw(req);
+
+    if (route === 'interactions' || (!route && req.method === 'POST' && req.headers['x-signature-ed25519'])) {
+      return await handleInteraction(req, res, raw);
+    }
+
+    if (route === 'tick' || route === 'finalize') {
+      const out = await settlePostedPicks().catch((e) => ({ error: e.message || String(e) }));
+      return res.status(200).json({ ok: true, ...out });
+    }
+
+    if (route === 'register') {
+      return res.status(200).json({ ok: true, note: 'Use /api/cron?route=bot-register' });
+    }
+
+    return res.status(200).json({ ok: true, message: 'LeanLab notify online. Use Discord /config or website.' });
+  } catch (e) {
+    console.error(e);
+    return res.status(500).json({ error: e.message || String(e) });
+  }
+}
