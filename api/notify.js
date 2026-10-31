@@ -1,16 +1,19 @@
-/** LeanLab Discord bot — interactions + website send */
 import crypto from 'node:crypto';
+import { americanToProb, normalizeForTools } from './_odds.js';
+import { runAllTools } from './best-bets.js';
+import { getGames } from './games.js';
+import { fetchPropsForGame, bestPlayerLean } from './props.js';
+import { fetchCompleted } from './settle.js';
 
-const GUILD = () => process.env.DISCORD_GUILD_ID || '1363232146743099435';
+const LEAGUE_COLORS = { NFL: 0x013369, NCAAF: 0xe87722, NCAAB: 0x7c3aed, NBA: 0xc8102e, MLB: 0x002d72, NHL: 0x1e3a5f, DEFAULT: 0x38bdf8 };
 const LEAGUE_KEYS = ['NFL', 'NBA', 'NCAAF', 'NCAAB', 'MLB', 'NHL'];
-const LEAGUE_COLORS = { NFL: 0x013369, NBA: 0xc8102e, NCAAF: 0x7c2d12, NCAAB: 0x1d4ed8, MLB: 0x002d72, NHL: 0x111827, DEFAULT: 0x38bdf8 };
+const GUILD = () => process.env.DISCORD_GUILD_ID || '1363232146743099435';
 const ROLE_PANEL_KEYS = [
   { key: 'role_NFL', label: 'NFL Alerts' },
   { key: 'role_NCAAF', label: 'NCAAF Alerts' },
   { key: 'role_NCAAB', label: 'NCAAB Alerts' },
   { key: 'role_NBA', label: 'NBA Alerts' },
   { key: 'role_NHL', label: 'NHL Alerts' },
-  { key: 'role_MLB', label: 'MLB Alerts' },
   { key: 'role_ALL', label: 'All Sports' },
 ];
 const CFG_ITEMS = [
@@ -23,13 +26,8 @@ const CFG_ITEMS = [
   { key: 'alert_role', label: 'Default ping role', kind: 'role' },
 ];
 
+function chainKey() { return crypto.createHash('sha256').update(String(process.env.DISCORD_BOT_TOKEN || 'none')).digest('hex').slice(0, 40); }
 function sleep(ms) { return new Promise((r) => setTimeout(r, ms)); }
-function ctDayKey(d) { return d.toLocaleDateString('en-CA', { timeZone: 'America/Chicago' }); }
-function pickDayKey(p) {
-  const iso = p.start_time || p.commence_time;
-  if (!iso) return null;
-  return ctDayKey(new Date(iso));
-}
 
 async function botApi(method, path, body) {
   for (let i = 0; i < 4; i++) {
@@ -78,120 +76,245 @@ function text(content) { return { type: 4, data: { flags: 64, content } }; }
 function eph(data) { return { type: 4, data: { flags: 64, ...data } }; }
 async function sendChannel(channelId, payload) { return botApi('POST', `/channels/${channelId}/messages`, payload); }
 
-function teamsMatchLoose(a, b) {
-  const aa = String(a || '').toLowerCase().replace(/[^a-z0-9\s]/g, '').trim();
-  const bb = String(b || '').toLowerCase().replace(/[^a-z0-9\s]/g, '').trim();
-  if (!aa || !bb) return false;
-  if (aa === bb) return true;
-  const ap = aa.split(/\s+/).pop();
-  const bp = bb.split(/\s+/).pop();
-  return (ap && bb.includes(ap)) || (bp && aa.includes(bp));
+function liveAlertEmbed(row, m) {
+  const g = row.snapshot?.game || {};
+  return {
+    title: 'LIVE GAME ALERT',
+    description: `**${String(row.sport||'SPORT').toUpperCase()}** · Live\n**${g.away_team||'Away'} vs. ${g.home_team||'Home'}**\n**Score:** ${m.away_score??0} — ${m.home_score??0}\n**Status:** ${m.detail||'In progress'}`,
+    color: 0xef4444, footer: { text: 'LIVE' },
+  };
 }
-
-async function clearChannelMessages(channelId) {
-  let total = 0;
-  for (let pass = 0; pass < 8; pass++) {
-    const msgs = await botApi('GET', `/channels/${channelId}/messages?limit=100`);
-    if (!msgs || !msgs.length) break;
-    const bulk = msgs.filter((m) => m.id && !m.pinned).map((m) => m.id);
-    if (bulk.length >= 2) {
-      try {
-        await botApi('POST', `/channels/${channelId}/messages/bulk-delete`, { messages: bulk.slice(0, 100) });
-        total += bulk.length;
-      } catch {
-        for (const id of bulk) {
-          try { await botApi('DELETE', `/channels/${channelId}/messages/${id}`); total += 1; } catch {}
-          await sleep(200);
-        }
-      }
-    } else {
-      for (const m of msgs) {
-        if (m.pinned) continue;
-        try { await botApi('DELETE', `/channels/${channelId}/messages/${m.id}`); total += 1; } catch {}
-        await sleep(200);
-      }
-    }
-    await sleep(400);
+function resultTrackerEmbed(stats) {
+  const wins = stats.wins??0, losses = stats.losses??0, denom = wins+losses;
+  const rate = stats.win_rate != null ? stats.win_rate : denom ? (wins/denom)*100 : 0;
+  return { title: 'Result tracker', description: `**Settled:** ${stats.settled??0}\n**Wins:** ${wins}\n**Losses:** ${losses}\n**Pushes:** ${stats.pushes??0}\n**Win rate:** ${rate.toFixed(1)}%`, color: 0x111111 };
+}
+function rolePanelPayload(cfg) {
+  const lines = ['**Pick your alert roles**', 'Tap a button to get or remove that role.', ''];
+  for (const r of ROLE_PANEL_KEYS) lines.push(`**${r.label}** ${cfg[r.key] ? `<@&${cfg[r.key]}>` : '_(set with /setroles)_'}`);
+  const rows = [];
+  for (let i = 0; i < ROLE_PANEL_KEYS.length; i += 5) {
+    rows.push({ type: 1, components: ROLE_PANEL_KEYS.slice(i,i+5).map((r) => ({ type: 2, style: 2, label: r.label.slice(0,80), custom_id: `role|${r.key}` })) });
   }
-  return total;
+  return { embeds: [{ title: 'HelpBet alert roles', description: lines.join('\n'), color: 0x38bdf8 }], components: rows };
 }
-
-async function alreadyPosted(gameId, channelId) {
-  if (!gameId) return false;
+async function postRolePanel(cfg) {
+  if (!cfg.roles_panel) throw new Error('Set role panel channel first');
+  return sendChannel(cfg.roles_panel, rolePanelPayload(cfg));
+}
+async function clearChannelMessages(channelId) {
+  let deleted = 0;
+  for (let pass = 0; pass < 2; pass++) {
+    let list;
+    try {
+      list = await botApi('GET', `/channels/${channelId}/messages?limit=100`);
+    } catch (e) {
+      break;
+    }
+    if (!Array.isArray(list) || !list.length) break;
+    const bulk = list
+      .filter((m) => Date.now() - new Date(m.timestamp).getTime() < 13.9 * 24 * 3600e3)
+      .map((m) => m.id);
+    try {
+      if (bulk.length >= 2) {
+        await botApi('POST', `/channels/${channelId}/messages/bulk-delete`, { messages: bulk.slice(0, 100) });
+        deleted += bulk.length;
+      } else if (bulk.length === 1) {
+        await botApi('DELETE', `/channels/${channelId}/messages/${bulk[0]}`);
+        deleted += 1;
+      }
+    } catch (e) {
+      break;
+    }
+    if (list.length < 100) break;
+    await sleep(250);
+  }
+  return deleted;
+}
+function cfgPanel(cfg, selected) {
+  const val = (it) => { const v = cfg[it.key]; return v ? (it.kind === 'role' ? `<@&${v}>` : `<#${v}>`) : '_not set_'; };
+  const item = selected ? CFG_ITEMS.find((x) => x.key === selected) : null;
+  return {
+    embeds: [{ title: 'HelpBet admin', description: CFG_ITEMS.map((it) => `**${it.label}:** ${val(it)}`).join('\n').slice(0,4000), color: 0x38bdf8 }],
+    components: [
+      { type: 1, components: [{ type: 3, custom_id: 'cfg|pick', placeholder: 'Choose a setting', options: CFG_ITEMS.slice(0,25).map((it) => ({ label: it.label.slice(0,100), value: it.key })) }] },
+      ...(item ? [{ type: 1, components: [item.kind === 'role' ? { type: 6, custom_id: `cfg|role|${item.key}`, placeholder: item.label } : { type: 8, custom_id: `cfg|ch|${item.key}`, channel_types: [0,5], placeholder: item.label }] }] : []),
+      { type: 1, components: [...(item ? [{ type: 2, style: 4, label: 'Clear', custom_id: `cfg|clear|${item.key}` }] : []), { type: 2, style: 3, label: 'Post role panel', custom_id: 'cfg|rolespanel' }] },
+    ],
+  };
+}
+async function getPublicKey() {
+  if (process.env.DISCORD_PUBLIC_KEY) return process.env.DISCORD_PUBLIC_KEY;
+  const app = await botApi('GET', '/applications/@me');
+  return app.verify_key;
+}
+async function verifyDiscord(raw, sig, ts) {
+  if (!sig || !ts) return false;
   try {
-    const rows = await sb(`discord_posts?game_id=eq.${encodeURIComponent(gameId)}&channel_id=eq.${channelId}&created_at=gt.${new Date(Date.now() - 10 * 60e3).toISOString()}&select=id&limit=1`);
-    return Boolean(rows?.length);
+    const pub = await getPublicKey();
+    const der = Buffer.concat([Buffer.from('302a300506032b6570032100', 'hex'), Buffer.from(pub, 'hex')]);
+    const key = crypto.createPublicKey({ key: der, format: 'der', type: 'spki' });
+    return crypto.verify(null, Buffer.from(ts + raw), key, Buffer.from(sig, 'hex'));
   } catch { return false; }
 }
+function verifyPassword(password, salt, hash) {
+  try {
+    const h = crypto.scryptSync(String(password), salt, 32).toString('hex');
+    return crypto.timingSafeEqual(Buffer.from(h, 'hex'), Buffer.from(hash, 'hex'));
+  } catch { return false; }
+}
+function ctDayKey(d) { return d.toLocaleDateString('en-CA', { timeZone: 'America/Chicago' }); }
+function addDaysCT(base, n) { return new Date(base.getTime() + n * 86400000); }
+function moneylineField(p) {
+  const o = p.odds || {};
+  const parts = [];
+  if (o.ml_home != null || o.ml_away != null) parts.push(`**ML:** ${o.ml_away ?? '—'} / ${o.ml_home ?? '—'}`);
+  if (o.spread_home != null) parts.push(`**Spread:** ${o.spread_home > 0 ? '+' : ''}${o.spread_home}`);
+  if (o.total != null) parts.push(`**Total:** ${o.total}`);
+  return parts.join('  ·  ');
+}
 
-function simplePickEmbed(p) {
-  const sport = String(p.sport || '').toUpperCase();
-  const side = String(p.recommended_side || p.side || '').toLowerCase();
-  const lean = side === 'home' ? p.home_team : side === 'away' ? p.away_team : (side || '?');
-  const conf = p.confidence != null ? `${Math.round(Number(p.confidence) * 100)}%` : '—';
-  const when = p.start_time || p.commence_time
-    ? new Date(p.start_time || p.commence_time).toLocaleString('en-US', { timeZone: 'America/Chicago', weekday: 'short', month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' })
-    : 'TBD';
-  const algo = p.algorithm_name || p.algo || 'LeanLab';
+/** Short-lived cache so one /send run doesn't refetch props per pick in the same game. */
+const propsMemCache = new Map();
+async function propsForPick(p) {
+  const key = `${p.sport}|${p.home_team}|${p.away_team}`;
+  if (propsMemCache.has(key)) return propsMemCache.get(key);
+  const promise = fetchPropsForGame({ sport: p.sport, home: p.home_team, away: p.away_team })
+    .catch(() => ({ props: [], top_plays: [] }));
+  propsMemCache.set(key, promise);
+  setTimeout(() => propsMemCache.delete(key), 5 * 60 * 1000).unref?.();
+  return promise;
+}
+
+function encId(s) { return Buffer.from(String(s)).toString('base64url').slice(0, 80); }
+function decId(s) { try { return Buffer.from(String(s), 'base64url').toString('utf8'); } catch { return ''; } }
+const gameLookupCache = new Map();
+async function resolveGame(gid) {
+  const [sport, id] = String(gid).split(':');
+  if (!sport || !id) return null;
+  if (!gameLookupCache.has(sport)) {
+    const p = getGames(sport).then((r) => r.games || []).catch(() => []);
+    gameLookupCache.set(sport, p);
+    setTimeout(() => gameLookupCache.delete(sport), 5 * 60 * 1000).unref?.();
+  }
+  const games = await gameLookupCache.get(sport);
+  const g = games.find((x) => x.id === id);
+  if (!g) return null;
+  return { l: sport, h: g.home_team, a: g.away_team };
+}
+
+async function pickEmbed(p) {
+  const sport = String(p.sport || 'SPORT').toUpperCase();
+  const side = p.recommended_side || p.side || '?';
+  const conf = p.confidence != null ? Math.round(Number(p.confidence) * 100) : null;
+  const when = p.start_time ? new Date(p.start_time).toLocaleString('en-US', { timeZone: 'America/Chicago', weekday: 'short', month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit', timeZoneName: 'short' }) : 'TBD';
+  const fd = p.links?.fanduel || 'https://sportsbook.fanduel.com';
+  const dk = p.links?.draftkings || 'https://sportsbook.draftkings.com';
+  const pp = p.links?.prizepicks || 'https://prizepicks.com';
+  const mlLine = moneylineField(p);
   const desc = [
-    `**${p.away_team} @ ${p.home_team}**`,
-    `**Lean:** ${lean}`,
-    `**Confidence:** ${conf}`,
-    `**Kickoff (CT):** ${when}`,
-    `**Model:** ${algo}`,
-  ].join('\n');
+    `**${p.away_team||'Away'} vs ${p.home_team||'Home'}**`,
+    `**When:** ${when}`,
+    `**Lean:** **${String(side).toUpperCase()}**${conf!=null?` · ${conf}%`:''}`,
+    mlLine || null,
+    p.reasoning ? `**Why:** ${String(p.reasoning).slice(0, 280)}` : null,
+  ].filter(Boolean).join('\n');
+
+  const rows = [{ type: 1, components: [
+    { type: 2, style: 5, label: 'FanDuel', url: String(fd).slice(0,512) },
+    { type: 2, style: 5, label: 'DraftKings', url: String(dk).slice(0,512) },
+    { type: 2, style: 5, label: 'PrizePicks', url: String(pp).slice(0,512) },
+  ]}];
+
+  // Player props category selector, like the website's prop board.
+  // Keep the custom_id short (Discord's 100-char cap) — just sport + game id, resolved back via getGames().
+  const gid = `${sport}:${p.game_id || ''}`;
+  let snap = null;
+  try {
+    const propsData = await propsForPick(p);
+    const slim = (x) => ({ player: x.player, team: x.team || null, market: x.market_label || x.market, line: x.line, book: x.book, lean: x.lean || null });
+    snap = { props: (propsData.props || []).filter((x) => x.player && x.line != null).slice(0, 150).map(slim), top_plays: (propsData.top_plays || []).slice(0, 12).map(slim) };
+    // Only list players that actually have stat lines — no empty entries
+    const names = [...new Set(snap.props.map((x) => x.player))];
+    if (names.length) {
+      const leanPlayers = new Set((propsData.top_plays || []).map((x) => x.player));
+      names.sort((a, b) => (leanPlayers.has(b) - leanPlayers.has(a)) || a.localeCompare(b));
+      const options = names.slice(0, 25).map((n) => ({ label: n.slice(0,100), value: n.slice(0,100), description: leanPlayers.has(n) ? 'Has a lean' : undefined }));
+      rows.push({ type: 1, components: [{ type: 3, custom_id: `pp|sel|${gid}`, placeholder: 'Pick a player — stats, props & best bet', options }] });
+      if (snap.top_plays.length) {
+        rows.push({ type: 1, components: [{ type: 2, style: 1, label: 'Best picks for this game (all stats)', custom_id: `pp|top|${gid}` }] });
+      }
+    }
+  } catch {}
+
   return {
-    embeds: [{
-      title: `${sport} · Best pick`,
-      description: desc,
-      color: LEAGUE_COLORS[sport] || LEAGUE_COLORS.DEFAULT,
-      footer: { text: `game:${p.game_id || ''}` },
-    }],
+    embeds: [{ title: `${sport} · Best pick`, description: desc, color: LEAGUE_COLORS[sport]||LEAGUE_COLORS.DEFAULT, footer: { text: `game:${p.game_id || ''}` } }],
+    components: rows,
+    _snap: snap,
   };
 }
 
-async function sendPickTracked(channel, p, guildId) {
-  if (await alreadyPosted(p.game_id, channel)) return false;
-  const payload = simplePickEmbed(p);
-  const msg = await sendChannel(channel, payload);
-  try {
-    await sb('discord_posts', {
-      method: 'POST',
-      body: {
-        id: crypto.randomUUID(),
-        message_id: msg?.id || null,
-        channel_id: channel,
-        guild_id: guildId || null,
-        game_id: p.game_id || null,
-        sport: String(p.sport || '').toUpperCase(),
-        home_team: p.home_team,
-        away_team: p.away_team,
-        start_time: p.start_time || null,
-        snapshot: { recommended_side: p.recommended_side || p.side, confidence: p.confidence, algorithm_name: p.algorithm_name },
-        status: 'pending',
-      },
-      prefer: 'return=minimal',
-    });
-  } catch {}
-  return true;
+function propLine(pr) {
+  const l = pr.lean;
+  const tag = l ? ` — **lean ${String(l.side).toUpperCase()}** (${l.strength})` : '';
+  return `**${pr.market}** ${pr.line ?? '?'} · ${pr.book}${tag}`;
 }
-
-async function fetchPicksForSend(dateList) {
+function playerPropsEmbed(player, props, gid) {
+  const rows = props.filter((p) => p.player === player);
+  const team = rows.find((r) => r.team)?.team;
+  const lines = rows.slice(0, 20).map(propLine);
+  const best = bestPlayerLean(props, player);
+  const components = [];
+  if (best) components.push({ type: 1, components: [{ type: 2, style: 3, label: 'Best pick for this player', custom_id: `pp|best|${gid}|${encId(player)}` }] });
+  return {
+    embeds: [{ title: `${player}${team ? ` · ${team}` : ''}`, description: lines.length ? lines.join('\n') : 'No stat lines available for this player right now.', color: 0x38bdf8 }],
+    components,
+  };
+}
+function bestPickEmbed(player, lean) {
+  const l = lean.lean;
+  return {
+    embeds: [{
+      title: `Best pick · ${player}`,
+      description: `**${lean.market}** ${lean.line ?? ''}\n**Lean: ${String(l.side).toUpperCase()}** · ${l.strength} confidence\n${l.why || ''}`.trim(),
+      color: 0x22c55e,
+    }],
+    components: [],
+  };
+}
+function topPlaysEmbed(topPlays) {
+  if (!topPlays.length) return { embeds: [{ title: 'Best picks', description: 'No strong leans for this game yet.', color: 0x38bdf8 }], components: [] };
+  const lines = topPlays.slice(0, 10).map((p) => `**${p.player}** — ${p.market} ${p.line ?? ''} · lean **${String(p.lean.side).toUpperCase()}** (${p.lean.strength})`);
+  return { embeds: [{ title: 'Best picks for this game', description: lines.join('\n'), color: 0x22c55e }], components: [] };
+}
+function pickDayKey(p) {
+  const iso = p.start_time || p.commence_time;
+  if (!iso) return null;
+  return ctDayKey(new Date(iso));
+}
+async function fetchPicksForSend(league, startOff, endOff, dateList) {
   const base = process.env.APP_URL || 'https://helpbet.vercel.app';
-  const allowed = Array.isArray(dateList) && dateList.length
-    ? new Set(dateList.map((d) => String(d).trim()).filter(Boolean))
-    : null;
+  const now = new Date();
+  let allowed = null;
+  let rangeStart = null, rangeEnd = null;
+  if (Array.isArray(dateList) && dateList.length) {
+    allowed = new Set(dateList.map((d) => String(d).trim()).filter(Boolean));
+  } else {
+    rangeStart = ctDayKey(addDaysCT(now, startOff));
+    rangeEnd = ctDayKey(addDaysCT(now, endOff));
+  }
   const inRange = (p) => {
     const k = pickDayKey(p);
     if (!k) return false;
     if (allowed) return allowed.has(k);
-    const today = ctDayKey(new Date());
-    const tomorrow = ctDayKey(new Date(Date.now() + 86400000));
-    return k === today || k === tomorrow;
+    return k >= rangeStart && k <= rangeEnd;
   };
+
   const r = await fetch(`${base}/api/best-bets?min_confidence=0.30&limit=300`);
   const data = await r.json().catch(() => ({}));
   let picks = (Array.isArray(data.picks) ? data.picks : []).filter(inRange);
+  if (league && league !== 'ALL') picks = picks.filter((p) => String(p.sport || '').toUpperCase() === league);
+
   try {
     const dateQ = allowed ? [...allowed].join(',') : '';
     const gUrl = dateQ
@@ -204,24 +327,87 @@ async function fetchPicksForSend(dateList) {
     for (const g of games) {
       if (!inRange(g)) continue;
       const sport = String(g.sport || '').toUpperCase();
+      if (league && league !== 'ALL' && sport !== league) continue;
       const key = `${sport}|${g.home_team}|${g.away_team}`;
       if (seen.has(key)) continue;
+      const odds = g.odds || {};
+      const base2 = { game_id: g.id, sport, home_team: g.home_team, away_team: g.away_team, start_time: g.start_time || g.commence_time, odds, books: g.books, links: g.links };
+      const ranked = runAllTools(normalizeForTools(g));
+      if (ranked[0]) {
+        picks.push({ ...ranked[0], ...base2 });
+      } else {
+        // Every tool ran and none found an edge — show the market favorite honestly
+        const mlH = odds.ml_home, mlA = odds.ml_away;
+        if (mlH == null && mlA == null) continue;
+        const pH = americanToProb(mlH ?? -110), pA = americanToProb(mlA ?? -110);
+        const sum = pH + pA || 1;
+        const side = pH >= pA ? 'home' : 'away';
+        const fair = Math.max(pH, pA) / sum;
+        picks.push({ ...base2, recommended_side: side, confidence: fair, expected_value: 0, score: fair, algorithm_name: 'No tool edge', reasoning: 'All tools ran on this game and none found an edge. Showing the market favorite.' });
+      }
       seen.add(key);
-      picks.push({
-        game_id: g.id,
-        sport,
-        home_team: g.home_team,
-        away_team: g.away_team,
-        start_time: g.start_time || g.commence_time,
-        recommended_side: g.recommended_side || null,
-        confidence: g.confidence || null,
-        algorithm_name: 'Market',
-      });
     }
   } catch {}
-  return picks;
-}
 
+  const bestPer = new Map();
+  for (const p of picks) {
+    const k = `${String(p.sport || '').toUpperCase()}|${p.home_team}|${p.away_team}`;
+    const sc = p.score ?? p.confidence ?? 0;
+    const cur = bestPer.get(k);
+    if (!cur || sc > cur._sc) bestPer.set(k, { ...p, _sc: sc });
+  }
+  return [...bestPer.values()].sort((x, y) => new Date(x.start_time || 0) - new Date(y.start_time || 0));
+}
+async function alreadyPosted(gameId, channelId, side) {
+  if (!gameId) return false;
+  try {
+    const rows = await sb(`discord_posts?game_id=eq.${encodeURIComponent(gameId)}&channel_id=eq.${channelId}&created_at=gt.${new Date(Date.now() - 10 * 60e3).toISOString()}&select=id&limit=1`);
+    return Boolean(rows?.length);
+  } catch { return false; }
+}
+/** Send one pick embed and remember it in discord_posts so we can edit it at game-final and skip re-posting. */
+async function sendPickTracked(channel, p, guildId, opts = {}) {
+  if (opts.known ? opts.known.has(String(p.game_id)) : await alreadyPosted(p.game_id, channel)) return false;
+  const { _snap, ...payload } = await pickEmbed(p);
+  const msg = await sendChannel(channel, payload);
+  // Save in the background (awaited later in one batch) so the next card isn't delayed
+  const ins = sb('discord_posts', {
+    method: 'POST',
+    body: {
+      id: crypto.randomUUID(),
+      message_id: msg?.id || null,
+      channel_id: channel,
+      guild_id: guildId || null,
+      game_id: p.game_id || null,
+      sport: String(p.sport || '').toUpperCase(),
+      home_team: p.home_team,
+      away_team: p.away_team,
+      start_time: p.start_time || null,
+      snapshot: { recommended_side: p.recommended_side || p.side, confidence: p.confidence, algorithm_name: p.algorithm_name, props: _snap?.props || [], top_plays: _snap?.top_plays || [] },
+      status: 'pending',
+    },
+    prefer: 'return=minimal',
+  }).catch(() => {});
+  if (opts.inserts) opts.inserts.push(ins); else await ins;
+  return true;
+}
+async function knownGameIds(channel, list) {
+  const ids = list.map((p) => p.game_id).filter(Boolean).map((x) => `"${String(x).replace(/"/g, '')}"`);
+  if (!ids.length) return new Set();
+  try {
+    const rows = await sb(`discord_posts?channel_id=eq.${channel}&game_id=in.(${ids.join(',')})&created_at=gt.${new Date(Date.now() - 10 * 60e3).toISOString()}&select=game_id`);
+    return new Set((rows || []).map((r) => String(r.game_id)));
+  } catch { return new Set(); }
+}
+function teamKeyLoose(name) { return String(name || '').toLowerCase().replace(/[^a-z0-9\s]/g, '').trim(); }
+function teamsMatchLoose(a, b) {
+  const aa = teamKeyLoose(a), bb = teamKeyLoose(b);
+  if (!aa || !bb) return false;
+  if (aa === bb) return true;
+  const ap = aa.split(/\s+/).pop(), bp = bb.split(/\s+/).pop();
+  return (ap && bb.includes(ap)) || (bp && aa.includes(bp));
+}
+/** Find pending posted picks whose game has gone final, edit the Discord message with the result, mark settled. */
 /* ───────────── Live alerts, result tracker, card updates, stat breakdown ───────────── */
 const ESPN_PATHS = { NFL: 'football/nfl', NCAAF: 'football/college-football', NBA: 'basketball/nba', NCAAB: 'basketball/mens-college-basketball', MLB: 'baseball/mlb', NHL: 'hockey/nhl' };
 const GRADE = { hit: '✅ HIT', miss: '❌ MISSED', push: '➖ PUSH' };
@@ -419,262 +605,299 @@ async function settlePostedPicks() {
   return out;
 }
 
-async function readRaw(req) {
-  const chunks = [];
-  for await (const c of req) chunks.push(c);
-  return Buffer.concat(chunks).toString('utf8');
-}
-
-async function followUp(it, content) {
+async function snapFor(mid) {
+  if (!mid) return null;
   try {
-    await botApi('POST', `/webhooks/${it.application_id}/${it.token}/messages/@original`, { content: String(content).slice(0, 1900) });
-  } catch {
-    try { await botApi('POST', `/webhooks/${it.application_id}/${it.token}`, { content: String(content).slice(0, 1900) }); } catch {}
+    const rows = await sb(`discord_posts?message_id=eq.${mid}&select=snapshot&limit=1`);
+    const sn = rows?.[0]?.snapshot;
+    return sn && Array.isArray(sn.props) ? sn : null;
+  } catch { return null; }
+}
+async function runSendCommand(it, guildId, opt) {
+  const league = String(opt('league') || 'ALL').toUpperCase();
+  const daysChoice = String(opt('days') || 'today_and_tomorrow');
+  let startOff = Number(opt('start_day'));
+  let endOff = Number(opt('end_day'));
+  if (Number.isNaN(startOff) || opt('start_day') == null) {
+    if (daysChoice === 'today') { startOff = 0; endOff = 0; }
+    else if (daysChoice === 'tomorrow') { startOff = 1; endOff = 1; }
+    else if (daysChoice === 'next_3') { startOff = 0; endOff = 2; }
+    else { startOff = 0; endOff = 1; }
   }
+  if (Number.isNaN(endOff) || opt('end_day') == null) endOff = startOff;
+  if (endOff < startOff) endOff = startOff;
+  startOff = Math.max(-7, Math.min(30, startOff));
+  endOff = Math.max(startOff, Math.min(30, endOff));
+  const cfg = await loadCfg(guildId);
+  const picks = await fetchPicksForSend(league, startOff, endOff, null);
+  const follow = async (content) => { await botApi('POST', `/webhooks/${it.application_id}/${it.token}/messages/@original`, { content }); };
+  if (!picks.length) { await follow(`No picks for **${league}** days ${startOff}→${endOff} (0=today CT).`); return; }
+  const byLeague = {};
+  for (const p of picks) { const s = String(p.sport||'OTHER').toUpperCase(); (byLeague[s] ||= []).push(p); }
+  const leagues = league === 'ALL' ? Object.keys(byLeague).sort() : [league];
+  let sent = 0;
+  for (const L of leagues) {
+    const list = byLeague[L] || [];
+    if (!list.length) continue;
+    const channel = opt('channel') || cfg[`ch_${L}`] || cfg.alerts;
+    if (!channel) { await follow(`Skip **${L}**: set channel in /config`); continue; }
+    await sendChannel(channel, { embeds: [{ title: `═══ ${L} ═══`, description: `**${list.length}** pick(s) · days **${startOff}** to **${endOff}**`, color: LEAGUE_COLORS[L]||LEAGUE_COLORS.DEFAULT }] });
+    await sleep(400);
+    for (const p of list.slice(0, 15)) { if (await sendPickTracked(channel, p, guildId)) sent += 1; await sleep(1100); }
+    await sendChannel(channel, { embeds: [{ title: `End of ${L}`, description: `All **${L}** picks for this range.`, color: LEAGUE_COLORS[L]||LEAGUE_COLORS.DEFAULT }] });
+    await sleep(400);
+  }
+  await follow(`Done. Posted **${sent}** pick(s) for **${league}** (days ${startOff}→${endOff}) · leagues: ${Object.keys(byLeague).join(', ')}`);
 }
 
-async function handleInteraction(req, res, raw) {
-  let it;
-  try { it = JSON.parse(raw || '{}'); } catch { return res.status(400).send('bad json'); }
-  if (it.type === 1) return res.status(200).json({ type: 1 });
+async function handleBotInteraction(it, res) {
   const guildId = it.guild_id || GUILD();
-  const opt = (name) => {
-    const o = (it.data?.options || []).find((x) => x.name === name);
-    return o?.value;
-  };
+  const name = it.data?.name;
+  const opt = (n) => (it.data?.options || []).find((x) => x.name === n)?.value;
+
+  if (it.type === 3 && String(it.data?.custom_id || '').startsWith('pp|')) {
+    const parts = String(it.data.custom_id).split('|');
+    const act = parts[1];
+    const mid = /^\d+$/.test(parts[2] || '') ? parts[2] : it.message?.id;
+    const slow = async (gid) => {
+      // Fallback for old cards with no saved snapshot — must answer inside Discord's 3s window
+      const g = await resolveGame(gid);
+      if (!g) return null;
+      return fetchPropsForGame({ sport: g.l, home: g.h, away: g.a }).catch(() => null);
+    };
+    const load = async (gid) => {
+      const saved = await snapFor(mid);
+      if (saved) return saved;
+      return Promise.race([slow(gid), sleep(2000).then(() => 'timeout')]);
+    };
+    const busy = eph({ embeds: [{ title: 'Still loading this game\'s stats', description: 'Try again in a few seconds.', color: 0x6b7280 }] });
+    try {
+      if (act === 'sel') {
+        const propsData = await load(parts[2]);
+        if (propsData === 'timeout') return res.status(200).json(busy);
+        if (!propsData) return res.status(200).json(eph({ embeds: [{ title: 'Game not found (it may have started/finished).', color: 0x6b7280 }] }));
+        const player = it.data.values?.[0];
+        if (!player) return res.status(200).json(eph(topPlaysEmbed(propsData.top_plays || [])));
+        return res.status(200).json(eph(playerPropsEmbed(player, propsData.props || [], mid || parts[2])));
+      }
+      if (act === 'top') {
+        const propsData = await load(parts[2]);
+        if (propsData === 'timeout') return res.status(200).json(busy);
+        if (!propsData) return res.status(200).json(eph({ embeds: [{ title: 'Game not found (it may have started/finished).', color: 0x6b7280 }] }));
+        return res.status(200).json(eph(topPlaysEmbed(propsData.top_plays || [])));
+      }
+      if (act === 'best') {
+        const player = decId(parts[3]);
+        const propsData = await load(parts[2]);
+        if (propsData === 'timeout') return res.status(200).json({ type: 7, data: busy.data });
+        if (!propsData) return res.status(200).json({ type: 7, data: { embeds: [{ title: 'Game not found.', color: 0x6b7280 }], components: [] } });
+        const best = bestPlayerLean(propsData.props || [], player);
+        if (!best) return res.status(200).json({ type: 7, data: { embeds: [{ title: `No strong lean for ${player}`, color: 0x6b7280 }], components: [] } });
+        return res.status(200).json({ type: 7, data: bestPickEmbed(player, best) });
+      }
+    } catch (e) {
+      return res.status(200).json(eph({ embeds: [{ title: 'Error', description: String(e.message || e).slice(0,200), color: 0xef4444 }] }));
+    }
+    return res.status(200).json(text('Unknown action.'));
+  }
   if (it.type === 3 && String(it.data?.custom_id || '').startsWith('role|')) {
-    const key = String(it.data.custom_id).split('|')[1];
+    const roleKey = String(it.data.custom_id).split('|')[1];
     const cfg = await loadCfg(guildId);
-    const roleId = cfg[key];
-    if (!roleId) return res.status(200).json(text('Role not configured. Use /setroles first.'));
-    const memberId = it.member?.user?.id || it.user?.id;
+    const roleId = cfg[roleKey];
+    if (!roleId) return res.status(200).json(text('Role not configured. Admin: /setroles'));
+    const uid = it.member?.user?.id || it.user?.id;
     const has = (it.member?.roles || []).includes(roleId);
     try {
-      if (has) {
-        await botApi('DELETE', `/guilds/${guildId}/members/${memberId}/roles/${roleId}`);
-        return res.status(200).json(text(`Removed <@&${roleId}>`));
-      }
-      await botApi('PUT', `/guilds/${guildId}/members/${memberId}/roles/${roleId}`);
-      return res.status(200).json(text(`Added <@&${roleId}>`));
-    } catch (e) {
-      return res.status(200).json(text(`Role update failed: ${e.message}`));
-    }
+      if (has) { await botApi('DELETE', `/guilds/${guildId}/members/${uid}/roles/${roleId}`); return res.status(200).json(text(`Removed **${ROLE_PANEL_KEYS.find((r)=>r.key===roleKey)?.label||roleKey}**.`)); }
+      await botApi('PUT', `/guilds/${guildId}/members/${uid}/roles/${roleId}`);
+      return res.status(200).json(text(`Added **${ROLE_PANEL_KEYS.find((r)=>r.key===roleKey)?.label||roleKey}**.`));
+    } catch (e) { return res.status(200).json(text(`Role failed: ${e.message}`)); }
+  }
+  if (it.type === 3 && String(it.data?.custom_id || '').startsWith('cfg|')) {
+    if (!isAdmin(it)) return res.status(200).json(text('Admin only.'));
+    const parts = String(it.data.custom_id).split('|');
+    const act = parts[1], key = parts[2];
+    const cfg = await loadCfg(guildId);
+    let selected = null;
+    if (act === 'pick') selected = it.data.values?.[0];
+    else if (act === 'ch' || act === 'role') { cfg[key] = it.data.values[0]; await saveCfg(guildId, cfg); selected = key; if (key === 'roles_panel') { try { await postRolePanel(cfg); } catch {} } }
+    else if (act === 'clear') { delete cfg[key]; await saveCfg(guildId, cfg); }
+    else if (act === 'rolespanel') { try { await postRolePanel(cfg); return res.status(200).json(text('Role panel posted.')); } catch (e) { return res.status(200).json(text(e.message)); } }
+    return res.status(200).json({ type: 7, data: cfgPanel(cfg, selected) });
   }
   if (it.type !== 2) return res.status(200).json(text('Unsupported.'));
-  const name = it.data?.name;
-  if (name === 'config') {
+
+  if (name === 'config') { if (!isAdmin(it)) return res.status(200).json(text('Manage Server required.')); return res.status(200).json(eph(cfgPanel(await loadCfg(guildId), null))); }
+  if (name === 'setroles') {
     if (!isAdmin(it)) return res.status(200).json(text('Manage Server required.'));
     const cfg = await loadCfg(guildId);
-    const map = {
-      nfl: 'ch_NFL', nba: 'ch_NBA', ncaaf: 'ch_NCAAF', ncaab: 'ch_NCAAB', mlb: 'ch_MLB', nhl: 'ch_NHL',
-      tracker: 'tracker', stats: 'stats', alerts: 'alerts', roles_panel: 'roles_panel', alert_role: 'alert_role',
-    };
-    const changed = [];
-    for (const [optName, cfgKey] of Object.entries(map)) {
-      const v = opt(optName);
-      if (v != null && v !== '') { cfg[cfgKey] = String(v); changed.push(cfgKey); }
-    }
-    if (changed.length) await saveCfg(guildId, cfg);
-    const lines = CFG_ITEMS.map((c) => {
-      const v = cfg[c.key];
-      return `**${c.label}:** ${v ? (c.kind === 'channel' ? `<#${v}>` : `<@&${v}>`) : '_not set_'}`;
-    });
-    const header = changed.length ? `Saved **${changed.length}** setting(s).\n\n` : 'No changes (pass options to set).\n\n';
-    return res.status(200).json(eph({ embeds: [{ title: 'LeanLab /config', description: header + lines.join('\n'), color: 0x38bdf8 }] }));
-  }
-  if (name === 'wipeallchannel') {
-    if (!isAdmin(it)) return res.status(200).json(text('Manage Server required.'));
-    res.status(200).json({ type: 5 });
-    try {
-      const cfg = await loadCfg(guildId);
-      const ids = [];
-      for (const [k, v] of Object.entries(cfg || {})) {
-        if (!v) continue;
-        if (k.startsWith('ch_') || ['alerts','tracker','stats','roles_panel'].includes(k)) {
-          const id = String(v); if (!ids.includes(id)) ids.push(id);
-        }
-      }
-      if (!ids.length) { await followUp(it, 'No channels set.'); return; }
-      await followUp(it, `Wiping **${ids.length}** channel(s)…`);
-      let total = 0; const lines = [];
-      for (const id of ids) {
-        try { const n = await clearChannelMessages(id); total += n; lines.push(`<#${id}> ~${n}`); }
-        catch { lines.push(`<#${id}> fail`); }
-        await sleep(300);
-      }
-      await followUp(it, `Done. ~**${total}** messages.\n${lines.join('\n')}`);
-    } catch (e) { await followUp(it, `Wipe failed: ${e.message || e}`); }
-    return;
+    const map = { nfl: 'role_NFL', ncaaf: 'role_NCAAF', ncaab: 'role_NCAAB', nba: 'role_NBA', nhl: 'role_NHL', all: 'role_ALL', panel: 'roles_panel' };
+    for (const [k, ck] of Object.entries(map)) { const v = opt(k); if (v) cfg[ck] = v; }
+    await saveCfg(guildId, cfg);
+    let extra = '';
+    if (cfg.roles_panel) { try { await postRolePanel(cfg); extra = ` Panel → <#${cfg.roles_panel}>`; } catch (e) { extra = ` Panel: ${e.message}`; } }
+    return res.status(200).json(text('Roles saved.' + extra));
   }
   if (name === 'resetchannel') {
     if (!isAdmin(it)) return res.status(200).json(text('Manage Server required.'));
     const channel = opt('channel');
     if (!channel) return res.status(200).json(text('Pick a channel.'));
-    res.status(200).json({ type: 5 });
-    try { const n = await clearChannelMessages(channel); await followUp(it, `Cleared ~**${n}** in <#${channel}>.`); }
-    catch (e) { await followUp(it, `Failed: ${e.message}`); }
-    return;
+    try { const n = await clearChannelMessages(channel); return res.status(200).json(text(`Cleared ~**${n}** messages in <#${channel}>.`)); }
+    catch (e) { return res.status(200).json(text(`Failed: ${e.message}`)); }
   }
-  if (name === 'setroles') {
+  if (name === 'wipeallchannel') {
     if (!isAdmin(it)) return res.status(200).json(text('Manage Server required.'));
-    const cfg = await loadCfg(guildId);
-    for (const r of ROLE_PANEL_KEYS) {
-      const short = r.key.replace('role_', '').toLowerCase();
-      const v = opt(short) || opt(r.key);
-      if (v) cfg[r.key] = String(v);
-    }
-    const panel = opt('panel');
-    if (panel) cfg.roles_panel = String(panel);
-    await saveCfg(guildId, cfg);
-    let extra = '';
-    if (cfg.roles_panel) {
+    res.status(200).json({ type: 5 });
+    const follow = async (content) => {
       try {
-        const buttons = ROLE_PANEL_KEYS.map((r) => ({ type: 2, style: 1, label: r.label, custom_id: `role|${r.key}`, disabled: !cfg[r.key] }));
-        const rows = [];
-        for (let i = 0; i < buttons.length; i += 5) rows.push({ type: 1, components: buttons.slice(i, i + 5) });
-        await sendChannel(cfg.roles_panel, { embeds: [{ title: 'LeanLab · Role self-assign', description: 'Click for alert roles.', color: 0x38bdf8 }], components: rows });
-        extra = ' Panel posted.';
-      } catch (e) { extra = ` Panel error: ${e.message}`; }
-    }
-    return res.status(200).json(text('Roles saved.' + extra));
-  }
-  if (name === 'testalert' || name === 'testresult' || name === 'teststat') {
-    if (!isAdmin(it)) return res.status(200).json(text('Manage Server required.'));
-    const cfg = await loadCfg(guildId);
-    const ch = opt('channel') || (name === 'testalert' ? cfg.alerts : name === 'testresult' ? cfg.tracker : cfg.stats);
-    if (!ch) return res.status(200).json(text('Set channel first.'));
-    await sendChannel(ch, { embeds: [{ title: 'LeanLab sample', description: 'Test message.', color: 0x38bdf8 }] });
-    return res.status(200).json(text('Sample sent.'));
-  }
-  if (name === 'send' || name === 'post') {
-    if (!isAdmin(it)) return res.status(200).json(text('Manage Server required.'));
-    res.status(200).json({ type: 5 });
+        await botApi('POST', `/webhooks/${it.application_id}/${it.token}/messages/@original`, { content: String(content).slice(0, 1900) });
+      } catch (e) {
+        try {
+          await botApi('POST', `/webhooks/${it.application_id}/${it.token}`, { content: String(content).slice(0, 1900) });
+        } catch {}
+      }
+    };
     try {
-      const league = String(opt('league') || 'ALL').toUpperCase();
       const cfg = await loadCfg(guildId);
-      const days = opt('days') || 'today';
-      let dateList = [];
-      const today = ctDayKey(new Date());
-      const tmr = ctDayKey(new Date(Date.now() + 86400000));
-      const d2 = ctDayKey(new Date(Date.now() + 2 * 86400000));
-      if (days === 'today') dateList = [today];
-      else if (days === 'tomorrow') dateList = [tmr];
-      else if (days === 'today_and_tomorrow') dateList = [today, tmr];
-      else if (days === 'next_3') dateList = [today, tmr, d2];
-      else dateList = [today, tmr];
-      const startOff = opt('start_day');
-      const endOff = opt('end_day');
-      if (startOff != null || endOff != null) {
-        const s = Number(startOff ?? 0); const e = Number(endOff ?? s);
-        dateList = [];
-        for (let i = s; i <= e; i++) dateList.push(ctDayKey(new Date(Date.now() + i * 86400000)));
+      const ids = [];
+      for (const [k, v] of Object.entries(cfg || {})) {
+        if (!v) continue;
+        if (k.startsWith('ch_') || k === 'alerts' || k === 'tracker' || k === 'stats' || k === 'roles_panel') {
+          const id = String(v);
+          if (!ids.includes(id)) ids.push(id);
+        }
       }
-      let picks = await fetchPicksForSend(dateList);
-      if (league !== 'ALL') picks = picks.filter((p) => String(p.sport || '').toUpperCase() === league);
-      const override = opt('channel');
-      let sent = 0;
-      const byLeague = {};
-      for (const p of picks) { const L = String(p.sport || '').toUpperCase(); (byLeague[L] ||= []).push(p); }
-      for (const [L, list] of Object.entries(byLeague)) {
-        const channel = override || cfg[`ch_${L}`];
-        if (!channel) continue;
-        await sendChannel(channel, { embeds: [{ title: `${L} · ${dateList.join(', ')}`, description: `Posting **${list.length}** picks`, color: LEAGUE_COLORS[L] || LEAGUE_COLORS.DEFAULT }] });
-        for (const p of list) { if (await sendPickTracked(channel, p, guildId)) sent += 1; await sleep(250); }
+      if (!ids.length) {
+        await follow('No channels set in /config to wipe.');
+        return;
       }
-      await followUp(it, sent ? `Posted **${sent}** pick(s) for ${dateList.join(', ')}.` : `No picks for ${dateList.join(', ')}. Check /config league channels.`);
-    } catch (e) { await followUp(it, `Send failed: ${e.message || e}`); }
+      await follow(`Wiping **${ids.length}** channel(s) from /config…`);
+      let total = 0;
+      const lines = [];
+      for (const id of ids) {
+        try {
+          const nDel = await clearChannelMessages(id);
+          total += nDel;
+          lines.push(`<#${id}> ~${nDel}`);
+        } catch (e) {
+          lines.push(`<#${id}> fail: ${(e.message || e).toString().slice(0, 80)}`);
+        }
+        await sleep(300);
+      }
+      await follow(`Done. Wiped **${ids.length}** channel(s) · ~**${total}** messages.\n${lines.join('\n')}`);
+    } catch (e) {
+      await follow(`Wipe failed: ${e.message || e}`);
+    }
     return;
   }
-  if (name === 'login' || name === 'logout' || name === 'mybets' || name === 'run') {
-    return res.status(200).json(text('Use the website: https://helpbet.vercel.app'));
+  if (name === 'testalert') {
+    if (!isAdmin(it)) return res.status(200).json(text('Manage Server required.'));
+    const cfg = await loadCfg(guildId);
+    const channel = opt('channel') || cfg.alerts;
+    if (!channel) return res.status(200).json(text('No alert channel.'));
+    const roleId = cfg.role_NFL || cfg.alert_role;
+    await sendChannel(channel, { content: roleId ? `<@&${roleId}>` : undefined, embeds: [liveAlertEmbed({ sport: 'NFL', snapshot: { game: { away_team: 'Team A', home_team: 'Team B' } } }, { away_score: 17, home_score: 14, detail: 'Q3 · 08:42' })], allowed_mentions: roleId ? { roles: [roleId] } : { parse: [] } });
+    return res.status(200).json(text(`Test LIVE alert → <#${channel}>`));
   }
-  return res.status(200).json(text(`Unknown: ${name}`));
+  if (name === 'testresult') {
+    if (!isAdmin(it)) return res.status(200).json(text('Manage Server required.'));
+    const cfg = await loadCfg(guildId);
+    const channel = opt('channel') || cfg.tracker;
+    if (!channel) return res.status(200).json(text('No tracker channel.'));
+    await sendChannel(channel, { embeds: [resultTrackerEmbed({ settled: 100, wins: 58, losses: 37, pushes: 5, win_rate: 61.1 })] });
+    return res.status(200).json(text(`Test result tracker → <#${channel}>`));
+  }
+  if (name === 'teststat') {
+    if (!isAdmin(it)) return res.status(200).json(text('Manage Server required.'));
+    const cfg = await loadCfg(guildId);
+    const channel = opt('channel') || cfg.stats;
+    if (!channel) return res.status(200).json(text('No stats channel.'));
+    await sendChannel(channel, { embeds: [{ title: 'Stat breakdown · NFL Team A vs Team B', description: 'Demo', color: 0x38bdf8 }] });
+    return res.status(200).json(text(`Test stat → <#${channel}>`));
+  }
+  if (name === 'post') {
+    if (!isAdmin(it)) return res.status(200).json(text('Manage Server required.'));
+    const league = String(opt('league') || '').toUpperCase();
+    const cfg = await loadCfg(guildId);
+    const channel = opt('channel') || cfg[`ch_${league}`];
+    if (!channel) return res.status(200).json(text(`Set ${league} channel in /config`));
+    await sendChannel(channel, { embeds: [{ title: `${league} slate`, description: `Use **/send** for full picks.`, color: LEAGUE_COLORS[league]||LEAGUE_COLORS.DEFAULT }] });
+    return res.status(200).json(text(`Posted note in <#${channel}>.`));
+  }
+  if (name === 'send') {
+    if (!isAdmin(it)) return res.status(200).json(text('Manage Server required.'));
+    res.status(200).json({ type: 5 });
+    try { await runSendCommand(it, guildId, opt); } catch (e) {
+      try { await botApi('POST', `/webhooks/${it.application_id}/${it.token}/messages/@original`, { content: `Send failed: ${e.message||e}` }); } catch {}
+    }
+    return;
+  }
+  if (name === 'login') {
+    const username = String(opt('username')||'').trim().toLowerCase().replace(/[^a-z0-9_\-.]/g,'').slice(0,32);
+    const password = String(opt('password')||'');
+    if (!username || username.length < 3) return res.status(200).json(text('Username at least 3 characters.'));
+    if (!password || password.length < 4) return res.status(200).json(text('Password at least 4 characters.'));
+    try {
+      const rows = await sb(`hb_users?username=eq.${encodeURIComponent(username)}&select=username,password_hash,salt`);
+      if (!rows?.[0] || !verifyPassword(password, rows[0].salt, rows[0].password_hash)) return res.status(200).json(text('Wrong username or password.'));
+      const discordId = String(it.member?.user?.id || it.user?.id || '');
+      await sb('discord_links', { method: 'POST', body: { discord_user_id: discordId, username, linked_at: new Date().toISOString() }, prefer: 'resolution=merge-duplicates,return=minimal' });
+      let prevCfg = {};
+      try { const us = await sb(`user_settings?username=eq.${encodeURIComponent(username)}&select=notify_config,discord_webhook`); if (us?.[0]?.notify_config) prevCfg = us[0].notify_config || {}; } catch {}
+      let botCfg = {};
+      try { botCfg = await loadCfg(guildId); } catch {}
+      const merged = {
+        ...prevCfg,
+        linked_discord_user_id: discordId,
+        linked_guild_id: guildId,
+        discord_channels: botCfg,
+        delivery: Object.keys(botCfg || {}).length ? 'bot_channels' : (prevCfg.delivery || 'webhook'),
+      };
+      try {
+        await sb('user_settings', { method: 'POST', body: { username, notify_config: merged, updated_at: new Date().toISOString() }, prefer: 'resolution=merge-duplicates,return=minimal' });
+      } catch {}
+      const chCount = Object.keys(botCfg || {}).filter((k) => k.startsWith('ch_') || k === 'alerts').length;
+      const roleCount = Object.keys(botCfg || {}).filter((k) => k.startsWith('role_')).length;
+      return res.status(200).json(text(`Linked **${username}** · ${chCount} channel(s) · ${roleCount} role(s) from /config will show on the website Setup tab.`));
+    } catch (e) { return res.status(200).json(text(`Login failed: ${e.message}`)); }
+  }
+  if (name === 'logout') {
+    const discordId = String(it.member?.user?.id || it.user?.id || '');
+    try { await fetch(`${sbUrl()}/rest/v1/discord_links?discord_user_id=eq.${discordId}`, { method: 'DELETE', headers: sbHeaders() }); return res.status(200).json(text('Unlinked.')); }
+    catch (e) { return res.status(200).json(text(`Logout failed: ${e.message}`)); }
+  }
+  if (name === 'mybets') {
+    const discordId = String(it.member?.user?.id || it.user?.id || '');
+    try {
+      const links = await sb(`discord_links?discord_user_id=eq.${discordId}&select=username&limit=1`);
+      const username = links?.[0]?.username;
+      if (!username) return res.status(200).json(text('Not linked. Use /login first.'));
+      const bets = await sb(`bets?username=eq.${encodeURIComponent(username)}&select=sport,home_team,away_team,recommended_side,status&order=placed_at.desc&limit=10`);
+      if (!bets?.length) return res.status(200).json(text(`**${username}**: no bets yet.`));
+      return res.status(200).json(text(`**${username}**\n` + bets.map((b)=>`• **${b.sport}** ${b.away_team}@${b.home_team} → ${b.recommended_side} (${b.status})`).join('\n')));
+    } catch (e) { return res.status(200).json(text(`mybets failed: ${e.message}`)); }
+  }
+  if (name === 'run') return res.status(200).json(text('/run — use the website Games tab.'));
+  return res.status(200).json(text('Unknown command.'));
 }
 
-async function handleWebsiteSend(body) {
-  const username = body.username || null;
-  let userRow = null;
-  if (username) {
-    try {
-      const rows = await sb(`user_settings?username=eq.${encodeURIComponent(username)}&select=*`);
-      userRow = rows?.[0] || null;
-    } catch {}
-  }
-  const cfgUser = userRow?.notify_config || {};
-  const guildId = cfgUser.linked_guild_id || GUILD();
-  let botCfg = cfgUser.discord_channels || {};
-  if ((!botCfg || !Object.keys(botCfg).length) && guildId) {
-    try { botCfg = await loadCfg(guildId); } catch { botCfg = {}; }
-  }
-  if (!botCfg || !Object.keys(botCfg).length) {
-    return { status: 400, body: { error: 'No Discord channels set. Run /config in Discord first (set league channels).' } };
-  }
-  const isAuto = body.all_users === true;
-  if (isAuto) {
-    // Automatic sends run once per day no matter how many times something triggers them
-    try {
-      const recent = await sb(`discord_posts?created_at=gt.${new Date(Date.now() - 6 * 3600e3).toISOString()}&select=id&limit=1`);
-      if (recent?.length) return { status: 200, body: { ok: true, skipped: true, message: 'Auto-send already ran in the last 6 hours — skipped.' } };
-    } catch {}
-  }
-  const allDates = Array.isArray(body.dates) ? body.dates.map((d) => String(d).trim()).filter(Boolean).sort() : [];
-  let picks = await fetchPicksForSend(allDates.length ? allDates : null);
-  const leagueFilter = Array.isArray(body.leagues) && body.leagues.length
-    ? body.leagues.map((x) => String(x).toUpperCase()) : null;
-  if (leagueFilter) picks = picks.filter((p) => leagueFilter.includes(String(p.sport || '').toUpperCase()));
-  const byLeague = {};
-  for (const p of picks) { const L = String(p.sport || '').toUpperCase(); (byLeague[L] ||= []).push(p); }
-  let sent = 0;
-  const posted = [];
-  const perDay = {};
-  for (const p of picks) { const k = pickDayKey(p) || 'unknown'; perDay[k] = (perDay[k] || 0) + 1; }
-  for (const [L, list] of Object.entries(byLeague)) {
-    const channel = botCfg[`ch_${L}`];
-    if (!channel) continue;
-    const days = [...new Set(list.map((p) => pickDayKey(p)).filter(Boolean))].sort();
-    try {
-      await sendChannel(channel, {
-        embeds: [{
-          title: `${L} · LeanLab picks`,
-          description: days.length ? `**Days:** ${days.join(', ')}\n**Picks:** ${list.length}` : `**Picks:** ${list.length}`,
-          color: LEAGUE_COLORS[L] || LEAGUE_COLORS.DEFAULT,
-        }],
-      });
-    } catch {}
-    for (const p of list) {
-      try {
-        if (await sendPickTracked(channel, p, guildId)) {
-          sent += 1;
-          if (!posted.includes(L)) posted.push(L);
-        }
-      } catch {}
-      await sleep(250);
-    }
-  }
-  if (!sent) {
-    return {
-      status: 200,
-      body: {
-        ok: true,
-        message: allDates.length
-          ? `No picks found for selected day(s): ${allDates.join(', ')}. Make sure league channels are set in /config.`
-          : 'No picks matched. Set league channels with /config.',
-        dates: allDates, per_day: perDay, channels_used: posted,
-      },
-    };
-  }
-  return {
-    status: 200,
-    body: {
-      ok: true,
-      message: `Posted ${sent} pick(s)${allDates.length ? ` for ${allDates.join(', ')}` : ''}`,
-      sent, leagues: posted, dates: allDates, per_day: perDay,
-    },
-  };
+async function handleInteraction(req, res, raw) {
+  if (!(await verifyDiscord(raw, req.headers['x-signature-ed25519'], req.headers['x-signature-timestamp']))) return res.status(401).send('invalid request signature');
+  const it = JSON.parse(raw);
+  if (it.type === 1) return res.status(200).json({ type: 1 });
+  return handleBotInteraction(it, res);
+}
+async function readRaw(req) {
+  const chunks = [];
+  for await (const c of req) chunks.push(c);
+  return Buffer.concat(chunks).toString('utf8');
+}
+async function postWebhook(webhook, payload) {
+  const r = await fetch(webhook.includes('?') ? webhook + '&wait=true' : webhook + '?wait=true', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ username: 'HelpBet', allowed_mentions: { parse: [] }, ...payload }) });
+  if (!r.ok) throw new Error(`Webhook ${r.status}: ${(await r.text()).slice(0,120)}`);
 }
 
 export const config = { api: { bodyParser: false } };
-
 export default async function handler(req, res) {
   res.setHeader('Access-Control-Allow-Origin', '*');
   if (req.method === 'OPTIONS') return res.status(200).end();
@@ -682,22 +905,124 @@ export default async function handler(req, res) {
   const route = url.searchParams.get('route');
   try {
     const raw = await readRaw(req);
-    if (route === 'interactions' || (!route && req.method === 'POST' && req.headers['x-signature-ed25519'])) {
-      return await handleInteraction(req, res, raw);
-    }
+    if (route === 'interactions') return await handleInteraction(req, res, raw);
     if (route === 'tick' || route === 'finalize') {
       const out = await settlePostedPicks().catch((e) => ({ error: e.message || String(e) }));
       return res.status(200).json({ ok: true, ...out });
     }
+    if (route === 'register') return res.status(200).json({ ok: true, note: 'Use /api/cron?route=bot-register' });
     let body = {};
     try { body = raw ? JSON.parse(raw) : {}; } catch {}
-    if (req.method === 'POST') {
-      const result = await handleWebsiteSend(body);
-      return res.status(result.status).json(result.body);
+    const username = body.username || null;
+    let userRow = null;
+    if (username) {
+      try {
+        const rows = await sb(`user_settings?username=eq.${encodeURIComponent(username)}&select=*`);
+        userRow = rows?.[0] || null;
+      } catch {}
     }
-    return res.status(200).json({ ok: true, message: 'LeanLab notify online — POST with dates to send picks' });
+    const cfg = userRow?.notify_config || {};
+    const guildId = cfg.linked_guild_id || GUILD();
+    let botCfg = cfg.discord_channels || {};
+    if ((!botCfg || !Object.keys(botCfg).length) && guildId) {
+      try { botCfg = await loadCfg(guildId); } catch { botCfg = {}; }
+    }
+
+    if (botCfg && Object.keys(botCfg).length) {
+      if (body.all_users === true && !body._cont) {
+        try {
+          const recent = await sb(`discord_posts?created_at=gt.${new Date(Date.now() - 6 * 3600e3).toISOString()}&select=id&limit=1`);
+          if (recent?.length) return res.status(200).json({ ok: true, skipped: true, message: 'Auto-send already ran in the last 6 hours — skipped.' });
+        } catch {}
+      }
+      const allDates = Array.isArray(body.dates) ? body.dates.map((d) => String(d).trim()).filter(Boolean).sort() : [];
+      const resume = body._resume === true;
+      const chained = body._cont && req.headers['x-hb-chain'] === chainKey();
+      // Handle ONE day per invocation (own 60s budget), then hand the rest to a fresh invocation, in order.
+      const dates = allDates.length ? [allDates[0]] : [];
+      const rest = allDates.slice(1);
+      let picks = await fetchPicksForSend('ALL', 0, dates.length ? 0 : 2, dates.length ? dates : null);
+      const leagueFilter = Array.isArray(body.leagues) && body.leagues.length ? body.leagues.map((x) => String(x).toUpperCase()) : null;
+      if (leagueFilter) picks = picks.filter((p) => leagueFilter.includes(String(p.sport || '').toUpperCase()));
+      const byDate = {};
+      for (const p of picks) {
+        const k = pickDayKey(p) || 'unknown';
+        (byDate[k] ||= []).push(p);
+      }
+      if (dates.length) {
+        for (const k of Object.keys(byDate)) {
+          if (!dates.includes(k)) delete byDate[k];
+        }
+      }
+      const finalDates = Object.keys(byDate).sort();
+      const startedAt = Date.now();
+      let sent = 0;
+      let truncated = 0;
+      const posted = [];
+      const perDay = {};
+      const nice = (k) => new Date(`${k}T12:00:00Z`).toLocaleDateString('en-US', { weekday: 'long', month: 'long', day: 'numeric', timeZone: 'UTC' });
+      for (const day of finalDates) {
+        const dayPicks = byDate[day] || [];
+        const byLeague = {};
+        for (const p of dayPicks) {
+          const s2 = String(p.sport || 'OTHER').toUpperCase();
+          (byLeague[s2] ||= []).push(p);
+        }
+        perDay[day] = { total: dayPicks.length, by_league: Object.fromEntries(Object.keys(byLeague).map((L) => [L, byLeague[L].length])) };
+        // Each league has its own channel, so post all leagues at the same time
+        await Promise.all(Object.keys(byLeague).sort().map(async (L) => {
+          const list = (byLeague[L] || []).slice(0, 60);
+          if (!list.length) return;
+          const channel = botCfg[`ch_${L}`] || botCfg.alerts;
+          if (!channel) return;
+          const roleId = botCfg[`role_${L}`] || botCfg.role_ALL || botCfg.alert_role;
+          const [known] = await Promise.all([
+            resume ? knownGameIds(channel, list) : Promise.resolve(new Set()),
+            ...Array.from({ length: Math.ceil(list.length / 12) }, (_, i) => Promise.all(list.slice(i * 12, i * 12 + 12).map((p) => propsForPick(p)))),
+          ]);
+          // line between days, then the date header, then that day's games
+          if (chained && !resume) { await sendChannel(channel, { content: '━━━━━━━━━━━━━━━━━━━━━━━━━━━━' }); await sleep(200); }
+          if (!resume) await sendChannel(channel, {
+            content: roleId ? `<@&${roleId}>` : undefined,
+            embeds: [{ title: `📅 ${nice(day)}`, description: `**${L}** · **${byLeague[L].length}** pick(s)`, color: LEAGUE_COLORS[L] || LEAGUE_COLORS.DEFAULT }],
+            allowed_mentions: roleId ? { roles: [roleId] } : { parse: [] },
+          });
+          await sleep(200);
+          const inserts = [];
+          for (const p of list) {
+            if (Date.now() - startedAt > 52000) { truncated += 1; continue; }
+            if (await sendPickTracked(channel, p, guildId, { known, inserts })) sent += 1;
+            await sleep(250);
+          }
+          await Promise.all(inserts);
+          if (!posted.includes(L)) posted.push(L);
+        }));
+      }
+      const depth = Number(body._depth || 0);
+      const more = truncated > 0 && depth < 5;
+      if (rest.length || more) {
+        try {
+          await fetch(`${process.env.APP_URL || 'https://helpbet.vercel.app'}/api/notify`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', 'x-hb-chain': chainKey() },
+            body: JSON.stringify({ ...body, dates: more ? [dates[0], ...rest] : rest, _cont: true, _resume: more, _depth: depth + 1 }),
+            signal: AbortSignal.timeout(2000),
+          });
+        } catch {}
+      }
+      if (!sent && !rest.length && !more) {
+        return res.status(200).json({ ok: true, message: allDates.length ? `No picks on selected day(s): ${allDates.join(', ')}` : 'No picks matched. Set league channels in /config.', dates: allDates, per_day: perDay, channels_used: posted });
+      }
+      return res.status(200).json({ ok: true, message: `Posted ${sent} pick(s) for ${finalDates.join(', ') || dates.join(', ')}${rest.length ? ` — remaining days (${rest.join(', ')}) are posting next, in order` : ''}${truncated ? ` · ${truncated} skipped to stay in time` : ''}`, sent, leagues: posted, dates: allDates, per_day: perDay });
+    }
+
+    let webhook = body.webhook_url || userRow?.discord_webhook || cfg.default_webhook || process.env.DISCORD_WEBHOOK_URL;
+    if (!webhook || !String(webhook).includes('discord.com')) {
+      return res.status(400).json({ error: 'No Discord channels linked. Run /config + /login in Discord, or paste a webhook in Setup.' });
+    }
+    await postWebhook(webhook, { embeds: [{ title: 'HelpBet · Best bets', description: 'Open https://helpbet.vercel.app for full cards. Link Discord with /login to post into your /config channels.', color: 0x38bdf8 }] });
+    return res.status(200).json({ ok: true, message: 'Posted summary to webhook (link Discord with /login for channel + role delivery)' });
   } catch (e) {
-    console.error(e);
     return res.status(500).json({ error: e.message || String(e) });
   }
 }
