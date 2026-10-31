@@ -28,20 +28,38 @@ async function registerDiscordBot() {
     channel_types: [0, 5],
   };
   const roleOpt = (name, desc) => ({ type: 8, name, description: desc });
+  const ch = (name, desc) => ({ type: 7, name, description: desc, channel_types: [0, 5], required: false });
 
   const commands = [
     {
       name: 'login',
-      description: 'Link your HelpBet website account to Discord (syncs settings)',
+      description: 'Link your LeanLab website account to Discord',
       dm_permission: false,
       options: [
-        { type: 3, name: 'username', description: 'HelpBet username', required: true },
-        { type: 3, name: 'password', description: 'HelpBet password', required: true },
+        { type: 3, name: 'username', description: 'LeanLab username', required: true },
+        { type: 3, name: 'password', description: 'LeanLab password', required: true },
       ],
     },
-    { name: 'logout', description: 'Unlink your HelpBet account', dm_permission: false },
-    { name: 'mybets', description: 'Your bets from your linked HelpBet account', dm_permission: false },
-    { name: 'config', description: 'Admin: set league channels, tracker, stats, alerts, roles panel', ...admin },
+    { name: 'logout', description: 'Unlink your LeanLab account', dm_permission: false },
+    { name: 'mybets', description: 'Your bets from your linked LeanLab account', dm_permission: false },
+    {
+      name: 'config',
+      description: 'Admin: set/view league channels, tracker, stats, alerts, roles panel',
+      ...admin,
+      options: [
+        ch('nfl', 'NFL picks channel'),
+        ch('nba', 'NBA picks channel'),
+        ch('ncaaf', 'NCAAF picks channel'),
+        ch('ncaab', 'NCAAB picks channel'),
+        ch('mlb', 'MLB picks channel'),
+        ch('nhl', 'NHL picks channel'),
+        ch('tracker', 'Result tracker channel'),
+        ch('stats', 'Stat breakdown channel'),
+        ch('alerts', 'Live game alerts channel'),
+        ch('roles_panel', 'Role self-assign panel channel'),
+        roleOpt('alert_role', 'Default ping role for live alerts'),
+      ],
+    },
     {
       name: 'send',
       description: 'Admin: send best picks for a league (or all) for chosen days',
@@ -69,7 +87,7 @@ async function registerDiscordBot() {
         {
           type: 4,
           name: 'start_day',
-          description: 'Day offset from today (0=today, 1=tomorrow, -1=yesterday). Optional.',
+          description: 'Day offset from today (0=today, 1=tomorrow). Optional.',
           required: false,
           min_value: -7,
           max_value: 30,
@@ -110,13 +128,14 @@ async function registerDiscordBot() {
         roleOpt('ncaab', 'NCAAB Alerts role'),
         roleOpt('nba', 'NBA Alerts role'),
         roleOpt('nhl', 'NHL Alerts role'),
+        roleOpt('mlb', 'MLB Alerts role'),
         roleOpt('all', 'All Sports role'),
         { ...channelOpt, name: 'panel', description: 'Channel for the role self-assign panel' },
       ],
     },
     {
       name: 'wipeallchannel',
-      description: 'Admin: wipe messages in ALL channels set in /config (league + alerts + tracker + stats)',
+      description: 'Admin: wipe messages in ALL channels set in /config',
       ...admin,
     },
     {
@@ -145,7 +164,7 @@ async function registerDiscordBot() {
     },
     {
       name: 'run',
-      description: 'Run HelpBet tools on one game',
+      description: 'Run LeanLab tools on one game',
       dm_permission: false,
       options: [{ type: 3, name: 'game', description: 'Pick a game', required: true, autocomplete: true }],
     },
@@ -193,7 +212,7 @@ async function registerDiscordBot() {
     endpoint,
     endpoint_set: patchRes.ok,
     endpoint_detail: patchRes.ok ? endpoint : patchJson,
-    note: 'Admin cmds need Manage Server. /send posts best picks by league + day range.',
+    note: 'Admin cmds need Manage Server. /config sets all channels. /setroles sets alert roles.',
   };
 }
 
@@ -225,7 +244,6 @@ export default async function handler(req, res) {
     }
   }
 
-  // Frequent tick: live alerts + complete embeds (no re-post of daily picks)
   if (route === 'tick' || route === 'lifecycle') {
     try {
       const base = process.env.APP_URL || 'https://helpbet.vercel.app';
@@ -271,19 +289,17 @@ export default async function handler(req, res) {
     out.steps.best_bets = { error: e.message };
   }
 
-  // ONE daily picks post only (postall removed — it was re-sending the full slate ~5 min later)
   try {
     const n = await fetch(`${base}/api/notify`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ all_users: true, title: 'HelpBet · Daily — all bets for today' }),
+      body: JSON.stringify({ all_users: true, title: 'LeanLab · Daily — all bets for today' }),
     });
     out.steps.notify = await n.json().catch(() => ({}));
   } catch (e) {
     out.steps.notify = { error: e.message };
   }
 
-  // Live alerts + FINAL embed updates + tracker/stats
   try {
     const f = await fetch(`${base}/api/notify?route=tick`);
     out.steps.finalize = await f.json().catch(() => ({}));
