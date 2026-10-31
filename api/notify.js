@@ -1,6 +1,5 @@
 /** LeanLab Discord bot — interactions + website send */
 import crypto from 'node:crypto';
-import { fetchScoreboard } from './settle.js';
 
 const GUILD = () => process.env.DISCORD_GUILD_ID || '1363232146743099435';
 const LEAGUE_KEYS = ['NFL', 'NBA', 'NCAAF', 'NCAAB', 'MLB', 'NHL'];
@@ -120,7 +119,7 @@ async function clearChannelMessages(channelId) {
 async function alreadyPosted(gameId, channelId) {
   if (!gameId) return false;
   try {
-    const rows = await sb(`discord_posts?game_id=eq.${encodeURIComponent(gameId)}&channel_id=eq.${channelId}&created_at=gt.${new Date(Date.now() - 20 * 3600e3).toISOString()}&select=id&limit=1`);
+    const rows = await sb(`discord_posts?game_id=eq.${encodeURIComponent(gameId)}&channel_id=eq.${channelId}&created_at=gt.${new Date(Date.now() - 10 * 60e3).toISOString()}&select=id&limit=1`);
     return Boolean(rows?.length);
   } catch { return false; }
 }
@@ -223,81 +222,201 @@ async function fetchPicksForSend(dateList) {
   return picks;
 }
 
-async function settlePostedPicks() {
-  let pending;
+/* ───────────── Live alerts, result tracker, card updates, stat breakdown ───────────── */
+const ESPN_PATHS = { NFL: 'football/nfl', NCAAF: 'football/college-football', NBA: 'basketball/nba', NCAAB: 'basketball/mens-college-basketball', MLB: 'baseball/mlb', NHL: 'hockey/nhl' };
+const GRADE = { hit: '✅ HIT', miss: '❌ MISSED', push: '➖ PUSH' };
+const isoAgo = (ms) => new Date(Date.now() + ms).toISOString();
+
+async function loadBoard(sport, fromKey, toKey) {
+  const path = ESPN_PATHS[sport];
+  if (!path) return [];
+  const f = (k) => k.replace(/-/g, '');
+  const r = await fetch(`https://site.api.espn.com/apis/site/v2/sports/${path}/scoreboard?dates=${f(fromKey)}-${f(toKey)}&limit=400`, { headers: { 'User-Agent': 'Mozilla/5.0', Accept: 'application/json' } });
+  if (!r.ok) return [];
+  const data = await r.json();
+  const out = [];
+  for (const ev of data.events || []) {
+    const comp = (ev.competitions || [])[0] || {};
+    const st = comp.status?.type || {};
+    const home = (comp.competitors || []).find((c) => c.homeAway === 'home');
+    const away = (comp.competitors || []).find((c) => c.homeAway === 'away');
+    if (!home || !away) continue;
+    const final = Boolean(st.completed) || st.state === 'post' || st.name === 'STATUS_FINAL';
+    const voided = ['STATUS_POSTPONED', 'STATUS_CANCELED', 'STATUS_CANCELLED'].includes(st.name);
+    out.push({
+      id: ev.id, sport, state: voided ? 'void' : final ? 'final' : st.state === 'in' ? 'live' : 'pre',
+      detail: st.shortDetail || st.description || '',
+      home_team: home.team?.displayName, away_team: away.team?.displayName,
+      home_score: Number(home.score ?? 0), away_score: Number(away.score ?? 0),
+    });
+  }
+  return out;
+}
+
+function parseBox(data) {
+  const out = new Map();
+  for (const team of data?.boxscore?.players || []) {
+    for (const grp of team.statistics || []) {
+      const labels = grp.labels || grp.names || [];
+      for (const a of grp.athletes || []) {
+        const nm = a.athlete?.displayName;
+        if (!nm) continue;
+        const k = nm.toLowerCase();
+        if (!out.has(k)) out.set(k, { name: nm, team: team.team?.displayName, groups: {} });
+        const rec = {};
+        labels.forEach((l, i) => (rec[l] = a.stats?.[i]));
+        out.get(k).groups[String(grp.name || grp.type || 'main').toLowerCase()] = rec;
+      }
+    }
+  }
+  return out;
+}
+async function fetchBox(sport, espnId) {
+  const path = ESPN_PATHS[sport];
+  if (!path || !espnId) return null;
   try {
-    pending = await sb(`discord_posts?status=in.(pending,live)&select=*&order=created_at.asc&limit=150`);
-  } catch { return { checked: 0, settled: 0, live_alerts: 0 }; }
-  if (!pending?.length) return { checked: 0, settled: 0, live_alerts: 0 };
-  const sports = [...new Set(pending.map((r) => String(r.sport || 'NFL').toUpperCase()))];
-  const board = [];
-  for (const s of sports) {
-    try { board.push(...(await fetchScoreboard(s))); } catch {}
+    const r = await fetch(`https://site.api.espn.com/apis/site/v2/sports/${path}/summary?event=${espnId}`, { headers: { 'User-Agent': 'Mozilla/5.0', Accept: 'application/json' } });
+    return r.ok ? parseBox(await r.json()) : null;
+  } catch { return null; }
+}
+function topPerformers(box, sport) {
+  const first = (p, l) => { for (const rec of Object.values(p.groups)) if (rec[l] != null) return parseFloat(rec[l]) || 0; return 0; };
+  const score = (p) => {
+    if (sport === 'NBA' || sport === 'NCAAB') return first(p, 'PTS');
+    if (sport === 'NHL') return first(p, 'G') * 3 + first(p, 'A') * 2 + first(p, 'S') * 0.3;
+    if (sport === 'MLB') return first(p, 'H') + first(p, 'HR') * 2 + first(p, 'RBI');
+    return Object.values(p.groups).reduce((a, r) => a + (parseFloat(r.YDS) || 0) + (parseFloat(r.TD) || 0) * 20, 0);
+  };
+  const line = (p) => {
+    if (sport === 'NBA' || sport === 'NCAAB') return `${first(p, 'PTS')} PTS · ${first(p, 'REB')} REB · ${first(p, 'AST')} AST`;
+    if (sport === 'NHL') return `${first(p, 'G')} G · ${first(p, 'A')} A · ${first(p, 'S')} SOG`;
+    if (sport === 'MLB') return `${first(p, 'H')} H · ${first(p, 'HR')} HR · ${first(p, 'RBI')} RBI`;
+    return Object.entries(p.groups).filter(([, r]) => r.YDS != null).map(([n, r]) => `${n.slice(0, 4)} ${r.YDS} yds${r.TD && r.TD !== '0' ? ` ${r.TD} TD` : ''}`).join(' · ');
+  };
+  const by = new Map();
+  for (const p of box.values()) { if (!by.has(p.team)) by.set(p.team, []); by.get(p.team).push({ p, s: score(p) }); }
+  return [...by.entries()].map(([team, arr]) => ({ team, top: arr.sort((a, b) => b.s - a.s).slice(0, 3).map((x) => `**${x.p.name}** — ${line(x.p)}`) }));
+}
+
+function gradeSide(side, hs, as) {
+  if (side !== 'home' && side !== 'away') return null;
+  if (hs === as) return 'push';
+  return (side === 'home') === hs > as ? 'hit' : 'miss';
+}
+const liveState = (side, hs, as) => (side !== 'home' && side !== 'away' ? '' : hs === as ? '🟡 tied' : (side === 'home') === hs > as ? '🟢 winning' : '🔴 losing');
+const leanName = (row) => { const s = String(row.snapshot?.recommended_side || '').toLowerCase(); return s === 'home' ? row.home_team : s === 'away' ? row.away_team : '—'; };
+
+function cardEmbed(row, m, final) {
+  const sportU = String(row.sport || '').toUpperCase();
+  const side = String(row.snapshot?.recommended_side || '').toLowerCase();
+  const score = `**${row.away_team} ${m.away_score} — ${m.home_score} ${row.home_team}**`;
+  if (m.state === 'void') return { title: `${sportU} · POSTPONED`, description: `**${row.away_team} vs ${row.home_team}**\nGame not played — bet void.`, color: 0x6b7280, footer: { text: 'VOID' } };
+  if (final) {
+    const g = gradeSide(side, m.home_score, m.away_score);
+    return { title: `${sportU} · COMPLETE`, description: `**GAME IS OVER**\n${score}\n**Lean:** ${leanName(row)}${g ? `\n**Bet result:** ${GRADE[g]}` : ''}`, color: g === 'hit' ? 0x22c55e : g === 'miss' ? 0xef4444 : 0x6b7280, footer: { text: 'FINAL' } };
   }
-  let settled = 0, liveAlerts = 0;
-  for (const row of pending) {
-    const match = board.find((f) =>
-      String(f.sport).toUpperCase() === String(row.sport).toUpperCase() &&
-      teamsMatchLoose(f.home_team, row.home_team) && teamsMatchLoose(f.away_team, row.away_team)
-    );
-    if (!match) continue;
-    const side = String(row.snapshot?.recommended_side || '').toLowerCase();
-    const sportU = String(row.sport || '').toUpperCase();
-    const cfg = await loadCfg(row.guild_id || GUILD()).catch(() => ({}));
-    if (match.state === 'live' && (row.status === 'pending' || row.status === 'live')) {
-      if (row.channel_id && row.message_id) {
-        try {
-          await botApi('PATCH', `/channels/${row.channel_id}/messages/${row.message_id}`, {
-            embeds: [{ title: `${sportU} · LIVE`, description: `**${row.away_team} vs ${row.home_team}**\n**Score:** ${match.away_score} — ${match.home_score}\n**Lean:** **${(side || '?').toUpperCase()}**`, color: 0xef4444, footer: { text: 'LIVE' } }],
-          });
-        } catch {}
-      }
-      if (row.status === 'pending' && cfg.alerts) {
-        try {
-          const roleId = cfg.alert_role || cfg[`role_${sportU}`] || cfg.role_ALL;
-          await sendChannel(cfg.alerts, {
-            content: roleId ? `<@&${roleId}>` : undefined,
-            embeds: [{ title: 'LIVE GAME ALERT', description: `**${sportU}** · ${row.away_team} vs ${row.home_team}`, color: 0xef4444 }],
-            allowed_mentions: roleId ? { roles: [roleId] } : { parse: [] },
-          });
-          liveAlerts += 1;
-        } catch {}
-      }
-      if (row.status === 'pending') {
-        try { await sb(`discord_posts?id=eq.${row.id}`, { method: 'PATCH', body: { status: 'live' }, prefer: 'return=minimal' }); } catch {}
-      }
-      continue;
-    }
-    if (match.state !== 'final') continue;
-    let hit = null;
-    if (side === 'home' || side === 'away') {
-      if (match.home_score === match.away_score) hit = 'push';
-      else {
-        const homeWon = match.home_score > match.away_score;
-        hit = (side === 'home' && homeWon) || (side === 'away' && !homeWon) ? 'hit' : 'miss';
-      }
-    }
-    const resultText = `**FINAL:** ${match.away_team} ${match.away_score} — ${match.home_score} ${match.home_team}` +
-      (hit ? `\n**Bet result:** ${hit === 'hit' ? '✅ HIT' : hit === 'push' ? '➖ PUSH' : '❌ MISS'}` : '');
-    if (row.channel_id && row.message_id) {
-      try {
-        await botApi('PATCH', `/channels/${row.channel_id}/messages/${row.message_id}`, {
-          embeds: [{ title: `${sportU} · COMPLETE`, description: `**${row.away_team} vs ${row.home_team}**\n${resultText}`, color: hit === 'hit' ? 0x22c55e : hit === 'miss' ? 0xef4444 : 0x6b7280, footer: { text: 'FINAL' } }],
-          components: [],
-        });
-      } catch {}
-    }
-    if (cfg.tracker) {
-      try {
-        await sendChannel(cfg.tracker, { embeds: [{ title: `${sportU} · Result`, description: resultText, color: hit === 'hit' ? 0x22c55e : 0xef4444 }] });
-      } catch {}
-    }
+  return { title: `${sportU} · LIVE`, description: `${score}\n${m.detail || 'In progress'}\n**Lean:** ${leanName(row)} ${liveState(side, m.home_score, m.away_score)}`, color: 0xef4444, footer: { text: 'LIVE · updates every minute' } };
+}
+
+async function settlePostedPicks() {
+  const out = { checked: 0, live_alerts: 0, live_updates: 0, settled: 0, errors: [] };
+  // Old rows that never matched a game stop clogging the queue
+  await sb(`discord_posts?status=in.(pending,live)&start_time=lt.${isoAgo(-48 * 3600e3)}`, { method: 'PATCH', body: { status: 'expired' }, prefer: 'return=minimal' }).catch(() => {});
+  let rows;
+  try {
+    rows = await sb(`discord_posts?status=in.(pending,live)&start_time=lt.${isoAgo(10 * 60e3)}&start_time=gt.${isoAgo(-48 * 3600e3)}&order=start_time.asc&limit=120&select=*`);
+  } catch (e) { out.errors.push(e.message); return out; }
+  out.checked = rows?.length || 0;
+  if (!rows?.length) return out;
+
+  const range = new Map();
+  for (const r of rows) {
+    const k = ctDayKey(new Date(r.start_time));
+    const c = range.get(r.sport) || { from: k, to: k };
+    if (k < c.from) c.from = k;
+    if (k > c.to) c.to = k;
+    range.set(r.sport, c);
+  }
+  const boards = new Map();
+  await Promise.all([...range].map(async ([sport, r]) => {
+    const [y, mo, d] = r.to.split('-').map(Number);
+    const to = new Date(Date.UTC(y, mo - 1, d + 1, 12)).toISOString().slice(0, 10);
+    boards.set(sport, await loadBoard(sport, r.from, to).catch(() => []));
+  }));
+
+  const cfgCache = new Map();
+  const cfgFor = async (g) => { const k = g || GUILD(); if (!cfgCache.has(k)) cfgCache.set(k, await loadCfg(k).catch(() => ({}))); return cfgCache.get(k); };
+  const byGame = new Map();
+  for (const r of rows) { const k = `${r.sport}|${r.game_id || r.id}`; (byGame.get(k) || byGame.set(k, []).get(k)).push(r); }
+
+  for (const [, list] of byGame) {
+    const first = list[0];
+    const m = (boards.get(first.sport) || []).find((x) => teamsMatchLoose(x.home_team, first.home_team) && teamsMatchLoose(x.away_team, first.away_team));
+    if (!m || m.state === 'pre') continue;
+    const cfg = await cfgFor(first.guild_id);
+    const gid = first.game_id ? `game_id=eq.${encodeURIComponent(first.game_id)}&sport=eq.${first.sport}` : `id=eq.${first.id}`;
+    const sportU = String(first.sport || '').toUpperCase();
     try {
-      await sb(`discord_posts?id=eq.${row.id}`, { method: 'PATCH', body: { status: 'final', result: { home_score: match.home_score, away_score: match.away_score, hit } }, prefer: 'return=minimal' });
-    } catch {}
-    settled += 1;
+      if (m.state === 'live') {
+        const key = `${m.away_score}-${m.home_score}|${m.detail}`;
+        const claimed = await sb(`discord_posts?${gid}&live_claimed=eq.false`, { method: 'PATCH', body: { live_claimed: true, status: 'live', espn_id: m.id }, prefer: 'return=representation' }).catch(() => []);
+        let trackerMsg = list.find((r) => r.tracker_message_id);
+        if (claimed?.length) {
+          if (cfg.alerts) {
+            const roleId = cfg.alert_role || cfg[`role_${sportU}`] || cfg.role_ALL;
+            await sendChannel(cfg.alerts, {
+              content: `${roleId ? `<@&${roleId}> ` : ''}🚨 **${sportU} game is LIVE**`,
+              embeds: [{ title: 'LIVE GAME ALERT', description: `**${first.away_team} vs ${first.home_team}**\n**Score:** ${m.away_score} — ${m.home_score}\n${m.detail || ''}\n**Our lean:** ${leanName(first)}`, color: 0xef4444 }],
+              allowed_mentions: roleId ? { roles: [roleId] } : { parse: [] },
+            }).then(() => { out.live_alerts += 1; }).catch((e) => out.errors.push(`alert: ${e.message}`));
+          }
+          if (cfg.tracker) {
+            const msg = await sendChannel(cfg.tracker, { embeds: [cardEmbed(first, m, false)] }).catch((e) => { out.errors.push(`tracker: ${e.message}`); return null; });
+            if (msg?.id) {
+              trackerMsg = { tracker_channel_id: cfg.tracker, tracker_message_id: msg.id };
+              await sb(`discord_posts?${gid}`, { method: 'PATCH', body: { tracker_channel_id: cfg.tracker, tracker_message_id: msg.id }, prefer: 'return=minimal' }).catch(() => {});
+            }
+          }
+        }
+        if (list.every((r) => r.result?.live_key === key)) continue;
+        for (const r of list) {
+          if (r.channel_id && r.message_id) await botApi('PATCH', `/channels/${r.channel_id}/messages/${r.message_id}`, { embeds: [cardEmbed(r, m, false)], components: [] }).catch(() => {});
+          await sleep(200);
+        }
+        if (trackerMsg?.tracker_message_id) await botApi('PATCH', `/channels/${trackerMsg.tracker_channel_id}/messages/${trackerMsg.tracker_message_id}`, { embeds: [cardEmbed(first, m, false)] }).catch(() => {});
+        await sb(`discord_posts?${gid}`, { method: 'PATCH', body: { result: { live_key: key } }, prefer: 'return=minimal' }).catch(() => {});
+        out.live_updates += 1;
+        continue;
+      }
+
+      // final or void: claim every row of this game at once so it only finishes one time
+      const claimed = await sb(`discord_posts?${gid}&status=in.(pending,live)`, {
+        method: 'PATCH',
+        body: { status: m.state === 'void' ? 'void' : 'final', result: { home_score: m.home_score, away_score: m.away_score, hit: gradeSide(String(first.snapshot?.recommended_side || '').toLowerCase(), m.home_score, m.away_score) } },
+        prefer: 'return=representation',
+      }).catch(() => []);
+      if (!claimed?.length) continue;
+      for (const r of claimed) {
+        if (r.channel_id && r.message_id) await botApi('PATCH', `/channels/${r.channel_id}/messages/${r.message_id}`, { embeds: [cardEmbed(r, m, true)], components: [] }).catch((e) => out.errors.push(`card: ${e.message}`));
+        await sleep(200);
+      }
+      const done = cardEmbed(first, m, true);
+      const tr = claimed.find((r) => r.tracker_message_id);
+      if (cfg.tracker && m.state === 'final') {
+        if (tr) await botApi('PATCH', `/channels/${tr.tracker_channel_id}/messages/${tr.tracker_message_id}`, { embeds: [done] }).catch((e) => out.errors.push(`tracker: ${e.message}`));
+        else await sendChannel(cfg.tracker, { embeds: [{ ...done, title: `${sportU} · Result` }] }).catch((e) => out.errors.push(`tracker: ${e.message}`));
+      }
+      if (cfg.stats && m.state === 'final') {
+        const box = await fetchBox(first.sport, m.id);
+        const fields = box ? topPerformers(box, sportU).map((t) => ({ name: t.team || 'Team', value: t.top.join('\n') || '—' })).slice(0, 4) : [];
+        const g = claimed[0].result?.hit;
+        fields.push({ name: 'Our lean', value: `${leanName(first)} → ${g ? GRADE[g] : '—'}` });
+        await sendChannel(cfg.stats, { embeds: [{ title: `📊 ${sportU}: ${first.away_team} ${m.away_score} — ${m.home_score} ${first.home_team}`, description: 'Stat breakdown · top performers and how our lean did', color: 0x38bdf8, fields }] }).catch((e) => out.errors.push(`stats: ${e.message}`));
+      }
+      out.settled += 1;
+    } catch (e) { out.errors.push(e.message); }
   }
-  return { checked: pending.length, settled, live_alerts: liveAlerts };
+  return out;
 }
 
 async function readRaw(req) {
@@ -489,6 +608,14 @@ async function handleWebsiteSend(body) {
   }
   if (!botCfg || !Object.keys(botCfg).length) {
     return { status: 400, body: { error: 'No Discord channels set. Run /config in Discord first (set league channels).' } };
+  }
+  const isAuto = body.all_users === true;
+  if (isAuto) {
+    // Automatic sends run once per day no matter how many times something triggers them
+    try {
+      const recent = await sb(`discord_posts?created_at=gt.${new Date(Date.now() - 6 * 3600e3).toISOString()}&select=id&limit=1`);
+      if (recent?.length) return { status: 200, body: { ok: true, skipped: true, message: 'Auto-send already ran in the last 6 hours — skipped.' } };
+    } catch {}
   }
   const allDates = Array.isArray(body.dates) ? body.dates.map((d) => String(d).trim()).filter(Boolean).sort() : [];
   let picks = await fetchPicksForSend(allDates.length ? allDates : null);
