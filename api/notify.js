@@ -417,7 +417,7 @@ async function loadBoard(sport, fromKey, toKey) {
   const path = ESPN_PATHS[sport];
   if (!path) return [];
   const f = (k) => k.replace(/-/g, '');
-  const r = await fetch(`https://site.api.espn.com/apis/site/v2/sports/${path}/scoreboard?dates=${f(fromKey)}-${f(toKey)}&limit=400`, { headers: { 'User-Agent': 'Mozilla/5.0', Accept: 'application/json' } });
+  const r = await fetch(`https://site.api.espn.com/apis/site/v2/sports/${path}/scoreboard?dates=${f(fromKey)}-${f(toKey)}&limit=400${sport === 'NCAAF' ? '&groups=80' : sport === 'NCAAB' ? '&groups=50' : ''}`, { headers: { 'User-Agent': 'Mozilla/5.0', Accept: 'application/json' } });
   if (!r.ok) return [];
   const data = await r.json();
   const out = [];
@@ -510,7 +510,8 @@ async function settlePostedPicks() {
   await sb(`discord_posts?status=in.(pending,live)&start_time=lt.${isoAgo(-48 * 3600e3)}`, { method: 'PATCH', body: { status: 'expired' }, prefer: 'return=minimal' }).catch(() => {});
   let rows;
   try {
-    rows = await sb(`discord_posts?status=in.(pending,live)&start_time=lt.${isoAgo(10 * 60e3)}&start_time=gt.${isoAgo(-48 * 3600e3)}&order=start_time.asc&limit=120&select=*`);
+    rows = await sb(`discord_posts?status=in.(pending,live)&start_time=lt.${isoAgo(15 * 60e3)}&start_time=gt.${isoAgo(-48 * 3600e3)}&order=start_time.desc&limit=2000&select=id,sport,game_id,home_team,away_team,start_time,guild_id,channel_id,message_id,tracker_channel_id,tracker_message_id,live_claimed,status,result,side:snapshot->>recommended_side`);
+    rows = (rows || []).map((r) => ({ ...r, snapshot: { recommended_side: r.side } }));
   } catch (e) { out.errors.push(e.message); return out; }
   out.checked = rows?.length || 0;
   if (!rows?.length) return out;
@@ -535,10 +536,18 @@ async function settlePostedPicks() {
   const byGame = new Map();
   for (const r of rows) { const k = `${r.sport}|${r.game_id || r.id}`; (byGame.get(k) || byGame.set(k, []).get(k)).push(r); }
 
+  const t0 = Date.now();
+  const work = [];
   for (const [, list] of byGame) {
     const first = list[0];
     const m = (boards.get(first.sport) || []).find((x) => teamsMatchLoose(x.home_team, first.home_team) && teamsMatchLoose(x.away_team, first.away_team));
     if (!m || m.state === 'pre') continue;
+    work.push({ list, first, m });
+  }
+  out.games_active = work.length;
+  work.sort((a, b) => (a.m.state === 'final' ? 0 : 1) - (b.m.state === 'final' ? 0 : 1));
+  for (const { list, first, m } of work) {
+    if (Date.now() - t0 > 48000) break;
     const cfg = await cfgFor(first.guild_id);
     const gid = first.game_id ? `game_id=eq.${encodeURIComponent(first.game_id)}&sport=eq.${first.sport}` : `id=eq.${first.id}`;
     const sportU = String(first.sport || '').toUpperCase();
