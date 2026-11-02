@@ -416,10 +416,15 @@ const isoAgo = (ms) => new Date(Date.now() + ms).toISOString();
 async function loadBoard(sport, fromKey, toKey) {
   const path = ESPN_PATHS[sport];
   if (!path) return [];
-  const f = (k) => k.replace(/-/g, '');
-  const r = await fetch(`https://site.api.espn.com/apis/site/v2/sports/${path}/scoreboard?dates=${f(fromKey)}-${f(toKey)}&limit=400${sport === 'NCAAF' ? '&groups=80' : sport === 'NCAAB' ? '&groups=50' : ''}`, { headers: { 'User-Agent': 'Mozilla/5.0', Accept: 'application/json' } });
-  if (!r.ok) throw new Error(`ESPN ${r.status}`);
-  const data = await r.json();
+  const days = [];
+  for (let d = new Date(`${fromKey}T12:00:00Z`); d.toISOString().slice(0, 10) <= toKey && days.length < 5; d = new Date(d.getTime() + 86400000)) days.push(d.toISOString().slice(0, 10).replace(/-/g, ''));
+  const grp = sport === 'NCAAF' ? '&groups=80' : sport === 'NCAAB' ? '&groups=50' : '';
+  const datas = await Promise.all(days.map(async (d) => {
+    const r = await fetch(`https://site.api.espn.com/apis/site/v2/sports/${path}/scoreboard?dates=${d}&limit=300${grp}`, { headers: { 'User-Agent': 'Mozilla/5.0', Accept: 'application/json' } });
+    if (!r.ok) throw new Error(`ESPN ${r.status} ${d}`);
+    return r.json();
+  }));
+  const data = { events: datas.flatMap((x) => x.events || []) };
   const out = [];
   for (const ev of data.events || []) {
     const comp = (ev.competitions || [])[0] || {};
