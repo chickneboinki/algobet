@@ -418,7 +418,7 @@ async function loadBoard(sport, fromKey, toKey) {
   if (!path) return [];
   const f = (k) => k.replace(/-/g, '');
   const r = await fetch(`https://site.api.espn.com/apis/site/v2/sports/${path}/scoreboard?dates=${f(fromKey)}-${f(toKey)}&limit=400${sport === 'NCAAF' ? '&groups=80' : sport === 'NCAAB' ? '&groups=50' : ''}`, { headers: { 'User-Agent': 'Mozilla/5.0', Accept: 'application/json' } });
-  if (!r.ok) return [];
+  if (!r.ok) throw new Error(`ESPN ${r.status}`);
   const data = await r.json();
   const out = [];
   for (const ev of data.events || []) {
@@ -528,7 +528,9 @@ async function settlePostedPicks() {
   await Promise.all([...range].map(async ([sport, r]) => {
     const [y, mo, d] = r.to.split('-').map(Number);
     const to = new Date(Date.UTC(y, mo - 1, d + 1, 12)).toISOString().slice(0, 10);
-    boards.set(sport, await loadBoard(sport, r.from, to).catch(() => []));
+    const b = await loadBoard(sport, r.from, to).catch((e) => { out.errors.push(`board ${sport}: ${e.message}`); return []; });
+    boards.set(sport, b);
+    (out.boards ||= {})[sport] = `${r.from}..${to}:${b.length}`;
   }));
 
   const cfgCache = new Map();
