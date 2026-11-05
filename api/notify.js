@@ -1,6 +1,7 @@
 import crypto from 'node:crypto';
 import { americanToProb, normalizeForTools } from './_odds.js';
 import { runAllTools } from './best-bets.js';
+import { primeForm } from './_odds.js';
 import { getGames } from './games.js';
 import { fetchPropsForGame, bestPlayerLean } from './props.js';
 import { fetchCompleted } from './settle.js';
@@ -310,6 +311,7 @@ async function fetchPicksForSend(league, startOff, endOff, dateList) {
     return k >= rangeStart && k <= rangeEnd;
   };
 
+  await primeForm().catch(() => {});
   const r = await fetch(`${base}/api/best-bets?min_confidence=0.30&limit=300`);
   const data = await r.json().catch(() => ({}));
   let picks = (Array.isArray(data.picks) ? data.picks : []).filter(inRange);

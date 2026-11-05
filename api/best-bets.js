@@ -1,5 +1,5 @@
 import { getGames } from './games.js';
-import { normalizeForTools, winChanceTool, underdogValueTool } from './_odds.js';
+import { normalizeForTools, winChanceTool, underdogValueTool, consensusModel, primeForm } from './_odds.js';
 
 function americanToProb(odds) {
   if (odds == null) return 0.5;
@@ -114,15 +114,27 @@ function ncaaEngine(game) {
 const winChance = (game) => winChanceTool(game);
 const EVALUATORS = [winChance, nflEngine, ncaaEngine, softLine, homeDog, blowoutFade, underdog, contrarian, homeAdv];
 
-/** Run every tool on one game; returns all picks, best first. */
+/** Run every tool on one game; the consensus model leads, other tools only count when they agree with it. */
 export function runAllTools(game, weights = {}) {
-  const out = [];
-  for (const fn of EVALUATORS) {
+  const all = [];
+  for (const fn of [consensusModel, ...EVALUATORS]) {
     try {
       const p = fn(game);
       if (!p || p.recommended_side === 'none') continue;
-      out.push({ ...p, score: scorePick(p, weights) });
+      all.push(p);
     } catch (_) {}
+  }
+  const lead = all.find((p) => p.consensus);
+  if (!lead) return all.map((p) => ({ ...p, score: scorePick(p, weights) })).sort((a, b) => b.score - a.score);
+  const agree = all.filter((p) => !p.consensus && p.recommended_side === lead.recommended_side);
+  const bonus = Math.min(0.03, agree.length * 0.01);
+  const out = [{ ...lead, confidence: Math.min(0.92, lead.confidence + bonus), score: 10 + lead.confidence, confirmed_by: agree.map((p) => p.algorithm_name) }];
+  // Tools that disagree are only used when the game is a true toss-up
+  const tossUp = lead.confidence < 0.53;
+  for (const p of all) {
+    if (p.consensus) continue;
+    if (p.recommended_side === lead.recommended_side) out.push({ ...p, score: scorePick(p, weights) });
+    else if (tossUp) out.push({ ...p, score: scorePick(p, weights) * 0.5 });
   }
   return out.sort((a, b) => b.score - a.score);
 }
@@ -183,25 +195,22 @@ export default async function handler(req, res) {
   const minConf = Number(req.query.min_confidence || 0.5);
   const limit = Math.min(Number(req.query.limit || 15), 300);
 
+  if (req.query.form === '1') return res.status(200).json({ form_teams: await primeForm() });
   let games = (await fetchGames()).map(normalizeForTools);
   if (!games.length && req.method === 'POST' && Array.isArray(req.body?.games)) games = req.body.games;
 
   const weights = await loadWeights(supabaseUrl, supabaseKey);
+  await primeForm();
   const picks = [];
   for (const game of games) {
-    for (const fn of EVALUATORS) {
-      try {
-        const p = fn(game);
-        if (!p || p.recommended_side === 'none') continue;
-        if ((p.confidence || 0) < minConf) continue;
-        const score = scorePick(p, weights);
-        picks.push({
-          ...p, score,
-          game_id: game.id, sport: game.sport, home_team: game.home_team, away_team: game.away_team,
-          start_time: game.start_time, odds: game.odds, books: game.books, links: game.links,
-          weight_used: weights[p.algorithm_id] ?? 1,
-        });
-      } catch (_) {}
+    for (const p of runAllTools(game, weights)) {
+      if ((p.confidence || 0) < minConf) continue;
+      picks.push({
+        ...p,
+        game_id: game.id, sport: game.sport, home_team: game.home_team, away_team: game.away_team,
+        start_time: game.start_time, odds: game.odds, books: game.books, links: game.links,
+        weight_used: weights[p.algorithm_id] ?? 1,
+      });
     }
   }
 
