@@ -3,7 +3,7 @@ import { pathToFileURL } from 'node:url';
 import { dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-const CACHE = '/tmp/leanlab_notify_v5.mjs';
+const CACHE = '/tmp/leanlab_notify_v6.mjs';
 const SOURCE =
   'https://raw.githubusercontent.com/chickneboinki/algobet/f6ba816008acb88c15e7e99782e37713391c45c5/api/notify.js';
 const API_DIR = dirname(fileURLToPath(import.meta.url));
@@ -74,58 +74,20 @@ function applyParlayPatches(code) {
     "if (k.startsWith('ch_') || k === 'alerts' || k === 'tracker' || k === 'stats' || k === 'parlays' || k === 'roles_panel')"
   );
 
-  const marker = `      const allDates = Array.isArray(body.dates) ? body.dates.map((d) => String(d).trim()).filter(Boolean).sort() : [];
-      const resume = body._resume === true;`;
+  const marker = `      const allDates = Array.isArray(body.dates) ? body.dates.map((d) => String(d).trim()).filter(Boolean).sort() : [];\n      const resume = body._resume === true;`;
 
-  const insert = `      const allDates = Array.isArray(body.dates) ? body.dates.map((d) => String(d).trim()).filter(Boolean).sort() : [];
-      if (body.parlays_only === true) {
-        if (!botCfg.parlays) {
-          return res.status(400).json({ error: 'Set a Parlays channel in Discord /config first.' });
-        }
-        const leagueFilter = Array.isArray(body.leagues) && body.leagues.length
-          ? body.leagues.map((x) => String(x).toUpperCase()).filter((x) => x && x !== 'ALL')
-          : null;
-        let picks = await fetchPicksForSend('ALL', 0, allDates.length ? 0 : 2, allDates.length ? allDates : null);
-        if (leagueFilter?.length) picks = picks.filter((p) => leagueFilter.includes(String(p.sport || '').toUpperCase()));
-        const byDate = {};
-        for (const p of picks) {
-          const k = pickDayKey(p) || 'unknown';
-          (byDate[k] ||= []).push(p);
-        }
-        if (allDates.length) {
-          for (const k of Object.keys(byDate)) {
-            if (!allDates.includes(k)) delete byDate[k];
-          }
-        }
-        let posted = 0;
-        const daysDone = [];
-        for (const day of Object.keys(byDate).sort()) {
-          const dayPicks = byDate[day] || [];
-          const byLeague = {};
-          for (const p of dayPicks) {
-            const s2 = String(p.sport || 'OTHER').toUpperCase();
-            (byLeague[s2] ||= []).push(p);
-          }
-          const dayLabel = new Date(\`${day}T12:00:00Z\`).toLocaleDateString('en-US', { month: 'short', day: 'numeric', timeZone: 'UTC' });
-          const n = await postParlays(day, dayLabel, dayPicks, byLeague, botCfg, guildId, { leagues: leagueFilter }).catch(() => 0);
-          posted += n || 0;
-          daysDone.push(day);
-        }
-        return res.status(200).json({
-          ok: true,
-          parlays_only: true,
-          sent: posted,
-          message: posted
-            ? \`Posted **${posted}** parlay ticket(s) → <#${botCfg.parlays}> for ${daysDone.join(', ')}\`
-            : \`No parlays built for ${allDates.join(', ') || 'selected days'}. Need enough strong legs.\`,
-          dates: allDates,
-          channel: botCfg.parlays,
-        });
-      }
-      const resume = body._resume === true;`;
+  const insert = `      const allDates = Array.isArray(body.dates) ? body.dates.map((d) => String(d).trim()).filter(Boolean).sort() : [];\n      if (body.parlays_only === true) {\n        if (!botCfg.parlays) {\n          return res.status(400).json({ error: 'Set a Parlays channel in Discord /config first.' });\n        }\n        const leagueFilter = Array.isArray(body.leagues) && body.leagues.length\n          ? body.leagues.map((x) => String(x).toUpperCase()).filter((x) => x && x !== 'ALL')\n          : null;\n        let picks = await fetchPicksForSend('ALL', 0, allDates.length ? 0 : 2, allDates.length ? allDates : null);\n        if (leagueFilter?.length) picks = picks.filter((p) => leagueFilter.includes(String(p.sport || '').toUpperCase()));\n        const byDate = {};\n        for (const p of picks) {\n          const k = pickDayKey(p) || 'unknown';\n          (byDate[k] ||= []).push(p);\n        }\n        if (allDates.length) {\n          for (const k of Object.keys(byDate)) {\n            if (!allDates.includes(k)) delete byDate[k];\n          }\n        }\n        let posted = 0;\n        const daysDone = [];\n        for (const day of Object.keys(byDate).sort()) {\n          const dayPicks = byDate[day] || [];\n          const byLeague = {};\n          for (const p of dayPicks) {\n            const s2 = String(p.sport || 'OTHER').toUpperCase();\n            (byLeague[s2] ||= []).push(p);\n          }\n          const dayLabel = new Date(\`${day}T12:00:00Z\`).toLocaleDateString('en-US', { month: 'short', day: 'numeric', timeZone: 'UTC' });\n          const n = await postParlays(day, dayLabel, dayPicks, byLeague, botCfg, guildId, { leagues: leagueFilter }).catch(() => 0);\n          posted += n || 0;\n          daysDone.push(day);\n        }\n        return res.status(200).json({\n          ok: true,\n          parlays_only: true,\n          sent: posted,\n          message: posted\n            ? \`Posted **${posted}** parlay ticket(s) → <#${botCfg.parlays}> for ${daysDone.join(', ')}\`\n            : \`No parlays built for ${allDates.join(', ') || 'selected days'}. Need enough strong legs.\`,\n          dates: allDates,\n          channel: botCfg.parlays,\n        });\n      }\n      const resume = body._resume === true;`;
 
   if (code.includes(marker)) code = code.replace(marker, insert);
   else console.warn('parlays_only patch skipped');
+
+  const guardNeedle = "if (botCfg && Object.keys(botCfg).length) {";
+  const guardInsert = `if (botCfg && Object.keys(botCfg).length) {\n      const hasIntent = (Array.isArray(body.dates) && body.dates.length) || body.all_users === true || body.parlays_only === true || body._cont === true || body._resume === true;\n      if (!hasIntent) {\n        return res.status(200).json({ ok: true, noop: true, message: 'No send — pass dates, parlays_only, or all_users.' });\n      }`;
+  if (code.includes(guardNeedle) && !code.includes('hasIntent')) {
+    code = code.replace(guardNeedle, guardInsert);
+  } else if (!code.includes('hasIntent')) {
+    console.warn('auto-send guard patch skipped');
+  }
 
   return code;
 }
