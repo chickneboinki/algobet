@@ -48,6 +48,7 @@ export const api = {
     leagues?: string[]
     username?: string
     dates?: string[]
+    parlays_only?: boolean
   }) => {
     const session = loadSession()
     return req<any>('/notify', {
@@ -80,15 +81,13 @@ export const api = {
       body: JSON.stringify({ ...patch, token: session?.token }),
     })
   },
-  teamStats: (team: string, sport = 'NBA') =>
-    req<any>(`/stats?team=${encodeURIComponent(team)}&sport=${encodeURIComponent(sport)}`),
-  playerProps: (opts: { sport: string; eventId?: string; home?: string; away?: string }) => {
+  props: (opts: { sport: string; game_id?: string; home?: string; away?: string }) => {
     const q = new URLSearchParams()
     q.set('sport', opts.sport)
-    if (opts.eventId) q.set('eventId', opts.eventId)
+    if (opts.game_id) q.set('game_id', opts.game_id)
     if (opts.home) q.set('home', opts.home)
     if (opts.away) q.set('away', opts.away)
-    return req<{ source: string; props: any[]; note?: string }>(`/props?${q.toString()}`)
+    return req<any>(`/props?${q}`)
   },
   generate: (prompt: string, sports: string[] = []) =>
     req<any>('/ai', { method: 'POST', body: JSON.stringify({ action: 'generate', prompt, sports }) }),
@@ -146,58 +145,6 @@ export const api = {
   },
   async deleteBet(id: string) {
     const { error } = await supabase.from('bets').delete().eq('id', id)
-    if (error) throw error
-  },
-  async settings() {
-    try {
-      return await this.userSettings()
-    } catch {
-      return {
-        discord_webhook: null,
-        notify_config: {
-          mode: 'single',
-          default_webhook: '',
-          league_webhooks: {},
-          auto_post_leagues: ['NFL', 'NCAAF', 'NCAAB', 'NBA', 'MLB', 'NHL'],
-          auto_post_hour_ct: 6,
-        },
-      }
-    }
-  },
-  async updateSettings(patch: any) {
-    return this.saveUserSettings(patch)
-  },
-  async listCustomTools() {
-    const session = loadSession()
-    let q = supabase.from('custom_tools').select('*').order('created_at', { ascending: false })
-    if (session?.username) q = q.eq('username', session.username)
-    const { data, error } = await q
-    if (error) throw error
-    return data || []
-  },
-  async saveCustomTool(tool: any) {
-    const session = loadSession()
-    const row = {
-      name: tool.name,
-      description: tool.description || tool.explanation || '',
-      sports: tool.sports || [],
-      prompt: tool.prompt || '',
-      suggested_code: tool.suggested_code || '',
-      meta: { explanation: tool.explanation, key_features: tool.key_features || [] },
-      username: session?.username || null,
-      created_at: new Date().toISOString(),
-    }
-    const { data, error } = await supabase.from('custom_tools').insert(row).select().single()
-    if (error) throw error
-    return data
-  },
-  async renameCustomTool(id: string, name: string) {
-    const { data, error } = await supabase.from('custom_tools').update({ name }).eq('id', id).select().single()
-    if (error) throw error
-    return data
-  },
-  async deleteCustomTool(id: string) {
-    const { error } = await supabase.from('custom_tools').delete().eq('id', id)
     if (error) throw error
   },
 }
