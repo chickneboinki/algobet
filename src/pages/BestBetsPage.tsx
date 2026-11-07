@@ -271,7 +271,7 @@ export default function BestBetsPage() {
           <button type="button" className="btn-primary" onClick={() => openSendModal('picks')}>
             Send picks
           </button>
-          <button type="button" className="btn-ghost" onClick={() => openSendModal('parlays')}>
+          <button type="button" className="btn-primary" onClick={() => openSendModal('parlays')}>
             Send parlays
           </button>
         </div>
