@@ -31,6 +31,16 @@ const CFG_ITEMS = [
 function chainKey() { return crypto.createHash('sha256').update(String(process.env.DISCORD_BOT_TOKEN || 'none')).digest('hex').slice(0, 40); }
 function sleep(ms) { return new Promise((r) => setTimeout(r, ms)); }
 
+async function pool(items, n, fn) {
+  for (let i = 0; i < items.length; i += n) await Promise.all(items.slice(i, i + n).map((x) => fn(x).catch(() => {})));
+}
+// single attempt (no waiting on rate limits) — used for frequent live-card refreshes
+async function botEdit(path, body) {
+  try {
+    const r = await fetch(`https://discord.com/api/v10${path}`, { method: 'PATCH', headers: { Authorization: `Bot ${process.env.DISCORD_BOT_TOKEN}`, 'Content-Type': 'application/json' }, body: JSON.stringify(body), signal: AbortSignal.timeout(6000) });
+    return r.ok;
+  } catch { return false; }
+}
 async function botApi(method, path, body) {
   for (let i = 0; i < 4; i++) {
     const r = await fetch(`https://discord.com/api/v10${path}`, {
@@ -637,7 +647,9 @@ async function settleParlays() {
       if (!prev || (r.status === 'final' && prev.status !== 'final') || (r.status === 'live' && prev.status === 'pending')) rowsByKey.set(k, r);
     }
   }
+  const T = Date.now();
   for (const par of pars) {
+    if (Date.now() - T > 12000) break;
     let changed = false;
     const legs = (par.legs || []).map((l) => {
       const row = rowsByKey.get(`${l.sport}|${l.game_id}`);
@@ -717,13 +729,13 @@ async function settlePostedPicks() {
   out.games_active = work.length;
   work.sort((a, b) => (a.m.state === 'final' ? 0 : 1) - (b.m.state === 'final' ? 0 : 1));
   for (const { list, first, m } of work) {
-    if (Date.now() - t0 > 48000) break;
+    if (Date.now() - t0 > 36000) break;
     const cfg = await cfgFor(first.guild_id);
     const gid = first.game_id ? `game_id=eq.${encodeURIComponent(first.game_id)}&sport=eq.${first.sport}` : `id=eq.${first.id}`;
     const sportU = String(first.sport || '').toUpperCase();
     try {
       if (m.state === 'live') {
-        const key = `${m.away_score}-${m.home_score}|${m.detail}`;
+        const key = `${m.away_score}-${m.home_score}|${Math.floor(Date.now() / 300000)}`;
         const claimed = await sb(`discord_posts?${gid}&live_claimed=eq.false`, { method: 'PATCH', body: { live_claimed: true, status: 'live', espn_id: m.id }, prefer: 'return=representation' }).catch(() => []);
         let trackerMsg = list.find((r) => r.tracker_message_id);
         if (claimed?.length) {
@@ -744,11 +756,9 @@ async function settlePostedPicks() {
           }
         }
         if (list.every((r) => r.result?.live_key === key)) continue;
-        for (const r of list) {
-          if (r.channel_id && r.message_id) await botApi('PATCH', `/channels/${r.channel_id}/messages/${r.message_id}`, { embeds: [cardEmbed(r, m, false)], components: [] }).catch(() => {});
-          await sleep(200);
-        }
-        if (trackerMsg?.tracker_message_id) await botApi('PATCH', `/channels/${trackerMsg.tracker_channel_id}/messages/${trackerMsg.tracker_message_id}`, { embeds: [cardEmbed(first, m, false)] }).catch(() => {});
+        if (out.live_updates >= 14 || Date.now() - t0 > 30000) continue;
+        await pool(list.filter((r) => r.channel_id && r.message_id), 6, (r) => botEdit(`/channels/${r.channel_id}/messages/${r.message_id}`, { embeds: [cardEmbed(r, m, false)], components: [] }));
+        if (trackerMsg?.tracker_message_id) await botEdit(`/channels/${trackerMsg.tracker_channel_id}/messages/${trackerMsg.tracker_message_id}`, { embeds: [cardEmbed(first, m, false)] });
         await sb(`discord_posts?${gid}`, { method: 'PATCH', body: { result: { live_key: key } }, prefer: 'return=minimal' }).catch(() => {});
         out.live_updates += 1;
         continue;
@@ -761,10 +771,7 @@ async function settlePostedPicks() {
         prefer: 'return=representation',
       }).catch(() => []);
       if (!claimed?.length) continue;
-      for (const r of claimed) {
-        if (r.channel_id && r.message_id) await botApi('PATCH', `/channels/${r.channel_id}/messages/${r.message_id}`, { embeds: [cardEmbed(r, m, true)], components: [] }).catch((e) => out.errors.push(`card: ${e.message}`));
-        await sleep(200);
-      }
+      await pool(claimed.filter((r) => r.channel_id && r.message_id), 6, (r) => botApi('PATCH', `/channels/${r.channel_id}/messages/${r.message_id}`, { embeds: [cardEmbed(r, m, true)], components: [] }).catch((e) => { if (!/10008/.test(e.message)) out.errors.push(`card: ${e.message}`); }));
       const done = cardEmbed(first, m, true);
       const tr = claimed.find((r) => r.tracker_message_id);
       if (cfg.tracker && m.state === 'final') {
