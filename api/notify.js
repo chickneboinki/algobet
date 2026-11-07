@@ -22,6 +22,7 @@ const CFG_ITEMS = [
   { key: 'tracker', label: 'Result tracker channel', kind: 'channel' },
   { key: 'stats', label: 'Stat breakdown channel', kind: 'channel' },
   { key: 'alerts', label: 'Live game alert channel', kind: 'channel' },
+  { key: 'parlays', label: 'Parlays channel', kind: 'channel' },
   { key: 'roles_panel', label: 'Role self-assign panel channel', kind: 'channel' },
   ...ROLE_PANEL_KEYS.map((r) => ({ key: r.key, label: r.label + ' role', kind: 'role' })),
   { key: 'alert_role', label: 'Default ping role', kind: 'role' },
@@ -511,6 +512,155 @@ function cardEmbed(row, m, final) {
   return { title: `${sportU} · LIVE`, description: `${score}\n${m.detail || 'In progress'}\n**Lean:** ${leanName(row)} ${liveState(side, m.home_score, m.away_score)}`, color: 0xef4444, footer: { text: 'LIVE · updates every minute' } };
 }
 
+/* ───────────── Parlays: build, post, track ───────────── */
+const amToDec = (a) => (a > 0 ? 1 + a / 100 : 1 + 100 / Math.abs(a));
+const decToAm = (d) => (d >= 2 ? Math.round((d - 1) * 100) : Math.round(-100 / (d - 1)));
+const fmtAm = (a) => (a > 0 ? `+${a}` : `${a}`);
+const LEG_ICON = { pending: '⏳', live: '🔴', hit: '✅', miss: '❌', push: '➖', void: '⚪' };
+
+function legPrice(p) {
+  const o = p.books?.fanduel || p.odds || {};
+  const v = p.recommended_side === 'home' ? o.ml_home : o.ml_away;
+  return Number.isFinite(Number(v)) && v !== null ? Number(v) : null;
+}
+function buildParlays(picks, scope) {
+  const now = Date.now();
+  const legs = [];
+  const seen = new Set();
+  for (const p of picks) {
+    if (p.recommended_side !== 'home' && p.recommended_side !== 'away') continue;
+    const k = `${String(p.sport).toUpperCase()}|${p.game_id || `${p.home_team}-${p.away_team}`}`;
+    if (seen.has(k)) continue;
+    const t = Date.parse(p.start_time || '');
+    if (Number.isFinite(t) && t < now - 5 * 60e3) continue;
+    const price = legPrice(p);
+    const conf = Number(p.confidence) || 0;
+    if (price == null || price < -450 || price > 400 || conf < 0.55) continue;
+    seen.add(k);
+    legs.push({ game_id: p.game_id || null, sport: String(p.sport).toUpperCase(), home_team: p.home_team, away_team: p.away_team, side: p.recommended_side, odds: price, conf, ev: conf * amToDec(price) - 1, start_time: p.start_time || null, status: 'pending' });
+  }
+  const specs = scope === 'mix'
+    ? [{ kind: 'safe', label: '🛡️ SAFE PARLAY', n: 2, minConf: 0.7, sort: (a, b) => b.conf - a.conf },
+       { kind: 'value', label: '⚖️ VALUE PARLAY', n: 3, minConf: 0.6, sort: (a, b) => b.ev - a.ev },
+       { kind: 'bold', label: '🚀 BOLD PARLAY', n: 4, minConf: 0.55, sort: (a, b) => b.ev - a.ev }]
+    : [{ kind: 'league', label: '🎟️ BEST PARLAY', n: 3, minConf: 0.6, sort: (a, b) => b.ev - a.ev }];
+  const out = [];
+  const used = new Set();
+  for (const s of specs) {
+    const pool = legs.filter((l) => l.conf >= s.minConf).sort(s.sort);
+    const chosen = pool.slice(0, s.n);
+    if (chosen.length < 2) continue;
+    const key = chosen.map((l) => `${l.sport}|${l.game_id}|${l.side}`).sort().join(',');
+    if (used.has(key)) continue;
+    used.add(key);
+    const dec = chosen.reduce((a, l) => a * amToDec(l.odds), 1);
+    const prob = chosen.reduce((a, l) => a * l.conf, 1);
+    out.push({ kind: s.kind, label: s.label, legs: chosen, odds_american: decToAm(dec), win_prob: prob });
+  }
+  return out;
+}
+const legTeam = (l) => (l.side === 'home' ? l.home_team : l.away_team);
+function parlayEmbed(par, dayLabel) {
+  const legs = par.legs || [];
+  const dec = amToDec(par.odds_american);
+  const done = par.status === 'final';
+  const lines = legs.map((l) => {
+    const sc = l.home_score != null ? ` · ${l.away_score}-${l.home_score}` : '';
+    return `${LEG_ICON[l.status] || '⏳'} **${legTeam(l)}** ML ${fmtAm(l.odds)}\n└ ${l.away_team} @ ${l.home_team} · ${l.sport}${sc}`;
+  });
+  const title = done ? `${par.label} · ${par.hit ? '✅ HIT' : '❌ MISSED'}` : `${par.label} · ${legs.length} legs`;
+  return {
+    title: `${title}${dayLabel ? ` · ${dayLabel}` : ''}`.slice(0, 250),
+    description: lines.join('\n').slice(0, 3900),
+    color: done ? (par.hit ? 0x22c55e : 0xef4444) : 0x38bdf8,
+    fields: [
+      { name: 'Parlay odds', value: `**${fmtAm(par.odds_american)}**`, inline: true },
+      { name: '$10 pays', value: `$${(10 * dec).toFixed(2)}`, inline: true },
+      { name: 'Model chance', value: `${Math.round((par.win_prob || 0) * 100)}%`, inline: true },
+    ],
+    footer: { text: done ? 'FINAL · FanDuel prices when posted' : 'Tracking live · FanDuel prices when posted' },
+  };
+}
+const PARLAY_BUTTONS = [{ type: 1, components: [
+  { type: 2, style: 5, label: 'FanDuel', url: 'https://sportsbook.fanduel.com/' },
+  { type: 2, style: 5, label: 'DraftKings', url: 'https://sportsbook.draftkings.com/' },
+] }];
+
+async function postParlays(day, dayLabel, allPicks, byLeague, botCfg, guildId) {
+  let posted = 0;
+  const jobs = [];
+  const mixCh = botCfg.parlays || botCfg.alerts || botCfg.tracker;
+  if (mixCh) for (const par of buildParlays(allPicks, 'mix')) jobs.push({ par, channel: mixCh, sport: 'MIX' });
+  for (const L of Object.keys(byLeague)) {
+    const ch = botCfg[`ch_${L}`];
+    if (!ch) continue;
+    for (const par of buildParlays(byLeague[L], 'league')) jobs.push({ par, channel: ch, sport: L });
+  }
+  for (const { par, channel, sport } of jobs) {
+    try {
+      const dup = await sb(`discord_parlays?channel_id=eq.${channel}&day=eq.${day}&kind=eq.${par.kind}&sport=eq.${sport}&created_at=gt.${new Date(Date.now() - 10 * 60e3).toISOString()}&select=id&limit=1`).catch(() => []);
+      if (dup?.length) continue;
+      const msg = await sendChannel(channel, { embeds: [parlayEmbed({ ...par, status: 'pending' }, dayLabel)], components: PARLAY_BUTTONS });
+      await sb('discord_parlays', { method: 'POST', prefer: 'return=minimal', body: { guild_id: guildId || null, channel_id: channel, message_id: msg?.id || null, day, kind: par.kind, label: par.label, sport, legs: par.legs, odds_american: par.odds_american, win_prob: par.win_prob, status: 'pending' } });
+      posted += 1;
+      await sleep(250);
+    } catch {}
+  }
+  return posted;
+}
+
+async function settleParlays() {
+  const out = { parlays_checked: 0, parlays_updated: 0, parlays_final: 0 };
+  let pars;
+  try { pars = await sb(`discord_parlays?status=in.(pending,live)&created_at=gt.${isoAgo(-5 * 86400e3)}&order=created_at.asc&limit=200`); } catch { return out; }
+  if (!pars?.length) return out;
+  out.parlays_checked = pars.length;
+  const ids = [...new Set(pars.flatMap((p) => (p.legs || []).map((l) => l.game_id).filter(Boolean)))];
+  const rowsByKey = new Map();
+  for (let i = 0; i < ids.length; i += 60) {
+    const chunk = ids.slice(i, i + 60).map((x) => `"${String(x).replace(/"/g, '')}"`).join(',');
+    const rows = await sb(`discord_posts?game_id=in.(${encodeURIComponent(chunk)})&select=game_id,sport,status,result`).catch(() => []);
+    for (const r of rows || []) {
+      const k = `${String(r.sport).toUpperCase()}|${r.game_id}`;
+      const prev = rowsByKey.get(k);
+      if (!prev || (r.status === 'final' && prev.status !== 'final') || (r.status === 'live' && prev.status === 'pending')) rowsByKey.set(k, r);
+    }
+  }
+  for (const par of pars) {
+    let changed = false;
+    const legs = (par.legs || []).map((l) => {
+      const row = rowsByKey.get(`${l.sport}|${l.game_id}`);
+      let status = l.status || 'pending';
+      const nl = { ...l };
+      if (row?.status === 'final' && row.result?.home_score != null) {
+        const g = gradeSide(l.side, row.result.home_score, row.result.away_score);
+        status = g || 'void';
+        nl.home_score = row.result.home_score; nl.away_score = row.result.away_score;
+      } else if (row?.status === 'void') status = 'void';
+      else if (row?.status === 'live') status = 'live';
+      if (status !== l.status) changed = true;
+      return { ...nl, status };
+    });
+    const anyMiss = legs.some((l) => l.status === 'miss');
+    const resolved = legs.every((l) => ['hit', 'miss', 'push', 'void'].includes(l.status));
+    const stale = Date.now() - Date.parse(par.created_at) > 4 * 86400e3;
+    let status = anyMiss || resolved ? 'final' : legs.some((l) => l.status === 'live') ? 'live' : 'pending';
+    if (stale && status !== 'final') status = 'expired';
+    let hit = par.hit;
+    if (status === 'final') hit = !anyMiss && legs.some((l) => l.status === 'hit');
+    if (!changed && status === par.status) continue;
+    const upd = { ...par, legs, status, hit };
+    await sb(`discord_parlays?id=eq.${par.id}`, { method: 'PATCH', prefer: 'return=minimal', body: { legs, status, hit } }).catch(() => {});
+    if (par.channel_id && par.message_id && status !== 'expired') {
+      await botApi('PATCH', `/channels/${par.channel_id}/messages/${par.message_id}`, { embeds: [parlayEmbed(upd, par.day ? new Date(`${par.day}T12:00:00Z`).toLocaleDateString('en-US', { month: 'short', day: 'numeric', timeZone: 'UTC' }) : '')], ...(status === 'final' ? { components: [] } : {}) }).catch(() => {});
+      await sleep(200);
+    }
+    out.parlays_updated += 1;
+    if (status === 'final') out.parlays_final += 1;
+  }
+  return out;
+}
+
 async function settlePostedPicks() {
   const out = { checked: 0, live_alerts: 0, live_updates: 0, settled: 0, errors: [] };
   // Old rows that never matched a game stop clogging the queue
@@ -926,7 +1076,8 @@ export default async function handler(req, res) {
     if (route === 'interactions') return await handleInteraction(req, res, raw);
     if (route === 'tick' || route === 'finalize') {
       const out = await settlePostedPicks().catch((e) => ({ error: e.message || String(e) }));
-      return res.status(200).json({ ok: true, ...out });
+      const pOut = await settleParlays().catch((e) => ({ parlay_error: e.message || String(e) }));
+      return res.status(200).json({ ok: true, ...out, ...pOut });
     }
     if (route === 'register') return res.status(200).json({ ok: true, note: 'Use /api/cron?route=bot-register' });
     let body = {};
@@ -1015,6 +1166,7 @@ export default async function handler(req, res) {
           await Promise.all(inserts);
           if (!posted.includes(L)) posted.push(L);
         }));
+        if (Date.now() - startedAt < 56000) await postParlays(day, new Date(`${day}T12:00:00Z`).toLocaleDateString('en-US', { month: 'short', day: 'numeric', timeZone: 'UTC' }), dayPicks, byLeague, botCfg, guildId).catch(() => {});
       }
       const depth = Number(body._depth || 0);
       const more = truncated > 0 && depth < 5;
