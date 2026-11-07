@@ -44,7 +44,7 @@ async function registerDiscordBot() {
     { name: 'mybets', description: 'Your bets from your linked LeanLab account', dm_permission: false },
     {
       name: 'config',
-      description: 'Admin: set/view league channels, tracker, stats, alerts, roles panel',
+      description: 'Admin: set/view league channels, tracker, stats, alerts, parlays, roles panel',
       ...admin,
       options: [
         ch('nfl', 'NFL picks channel'),
@@ -56,6 +56,7 @@ async function registerDiscordBot() {
         ch('tracker', 'Result tracker channel'),
         ch('stats', 'Stat breakdown channel'),
         ch('alerts', 'Live game alerts channel'),
+        ch('parlays', 'Parlays channel (all tickets)'),
         ch('roles_panel', 'Role self-assign panel channel'),
         roleOpt('alert_role', 'Default ping role for live alerts'),
       ],
