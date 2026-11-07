@@ -48,6 +48,7 @@ export const api = {
     leagues?: string[]
     username?: string
     dates?: string[]
+    parlays_only?: boolean
   }) => {
     const session = loadSession()
     return req<any>('/notify', {

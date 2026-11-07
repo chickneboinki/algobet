@@ -564,20 +564,30 @@ function parlayEmbed(par, dayLabel) {
   const legs = par.legs || [];
   const dec = amToDec(par.odds_american);
   const done = par.status === 'final';
+  const won = legs.filter((l) => l.status === 'hit').length;
+  const lost = legs.filter((l) => l.status === 'miss');
   const lines = legs.map((l) => {
-    const sc = l.home_score != null ? ` · ${l.away_score}-${l.home_score}` : '';
-    return `${LEG_ICON[l.status] || '⏳'} **${legTeam(l)}** ML ${fmtAm(l.odds)}\n└ ${l.away_team} @ ${l.home_team} · ${l.sport}${sc}`;
+    const sc = l.home_score != null ? ` · final ${l.away_score}-${l.home_score}` : '';
+    return `${LEG_ICON[l.status] || '⏳'} **${legTeam(l)}** ML ${fmtAm(l.odds)}${l.status === 'hit' ? ' — HIT' : l.status === 'miss' ? ' — MISSED' : l.status === 'live' ? ' — LIVE' : ''}\n└ ${l.away_team} @ ${l.home_team} · ${l.sport}${sc}`;
   });
   const title = done ? `${par.label} · ${par.hit ? '✅ HIT' : '❌ MISSED'}` : `${par.label} · ${legs.length} legs`;
+  const fields = [{ name: 'Parlay odds', value: `**${fmtAm(par.odds_american)}**`, inline: true }];
+  if (done && par.hit) {
+    fields.push({ name: '💰 Paid ($10 bet)', value: `**$${(10 * dec).toFixed(2)}** (profit $${(10 * dec - 10).toFixed(2)})`, inline: true });
+    fields.push({ name: 'Result', value: `All ${legs.length} legs hit ✅`, inline: true });
+  } else if (done) {
+    fields.push({ name: 'Payout', value: `$0.00 (lost $10)`, inline: true });
+    fields.push({ name: 'Result', value: `${won} of ${legs.length} legs hit · ❌ ${lost.map(legTeam).join(', ')}`.slice(0, 1000), inline: true });
+  } else {
+    fields.push({ name: '$10 pays', value: `$${(10 * dec).toFixed(2)}`, inline: true });
+    fields.push({ name: 'Progress', value: `${won}/${legs.length} legs hit${legs.some((l) => l.status === 'live') ? ' · games live' : ''}`, inline: true });
+  }
+  fields.push({ name: 'Model chance', value: `${Math.round((par.win_prob || 0) * 100)}%`, inline: true });
   return {
     title: `${title}${dayLabel ? ` · ${dayLabel}` : ''}`.slice(0, 250),
     description: lines.join('\n').slice(0, 3900),
     color: done ? (par.hit ? 0x22c55e : 0xef4444) : 0x38bdf8,
-    fields: [
-      { name: 'Parlay odds', value: `**${fmtAm(par.odds_american)}**`, inline: true },
-      { name: '$10 pays', value: `$${(10 * dec).toFixed(2)}`, inline: true },
-      { name: 'Model chance', value: `${Math.round((par.win_prob || 0) * 100)}%`, inline: true },
-    ],
+    fields,
     footer: { text: done ? 'FINAL · FanDuel prices when posted' : 'Tracking live · FanDuel prices when posted' },
   };
 }
@@ -586,15 +596,16 @@ const PARLAY_BUTTONS = [{ type: 1, components: [
   { type: 2, style: 5, label: 'DraftKings', url: 'https://sportsbook.draftkings.com/' },
 ] }];
 
-async function postParlays(day, dayLabel, allPicks, byLeague, botCfg, guildId) {
+async function postParlays(day, dayLabel, allPicks, byLeague, botCfg, guildId, opts = {}) {
   let posted = 0;
   const jobs = [];
   const mixCh = botCfg.parlays || botCfg.alerts || botCfg.tracker;
-  if (mixCh) for (const par of buildParlays(allPicks, 'mix')) jobs.push({ par, channel: mixCh, sport: 'MIX' });
+  const only = opts.leagueFilter;
+  if (mixCh) for (const par of buildParlays(allPicks, 'mix')) jobs.push({ par: only && only.length === 1 ? { ...par, label: `${par.label} · ${only[0]}` } : par, channel: mixCh, sport: 'MIX' });
   for (const L of Object.keys(byLeague)) {
-    const ch = botCfg[`ch_${L}`];
+    const ch = botCfg.parlays || botCfg[`ch_${L}`];
     if (!ch) continue;
-    for (const par of buildParlays(byLeague[L], 'league')) jobs.push({ par, channel: ch, sport: L });
+    for (const par of buildParlays(byLeague[L], 'league')) jobs.push({ par: { ...par, label: `🎟️ ${L} BEST PARLAY` }, channel: ch, sport: L });
   }
   for (const { par, channel, sport } of jobs) {
     try {
@@ -1105,6 +1116,7 @@ export default async function handler(req, res) {
         } catch {}
       }
       const allDates = Array.isArray(body.dates) ? body.dates.map((d) => String(d).trim()).filter(Boolean).sort() : [];
+      if (!allDates.length && body.all_users !== true) return res.status(200).json({ ok: true, skipped: true, message: 'No days selected — nothing was sent.' });
       const resume = body._resume === true;
       const chained = body._cont && req.headers['x-hb-chain'] === chainKey();
       // Handle ONE day per invocation (own 60s budget), then hand the rest to a fresh invocation, in order.
@@ -1136,6 +1148,12 @@ export default async function handler(req, res) {
         for (const p of dayPicks) {
           const s2 = String(p.sport || 'OTHER').toUpperCase();
           (byLeague[s2] ||= []).push(p);
+        }
+        if (body.parlays_only === true) {
+          const n = await postParlays(day, new Date(`${day}T12:00:00Z`).toLocaleDateString('en-US', { month: 'short', day: 'numeric', timeZone: 'UTC' }), dayPicks, byLeague, botCfg, guildId, { leagueFilter }).catch(() => 0);
+          sent += n;
+          perDay[day] = { parlays: n };
+          continue;
         }
         perDay[day] = { total: dayPicks.length, by_league: Object.fromEntries(Object.keys(byLeague).map((L) => [L, byLeague[L].length])) };
         // Each league has its own channel, so post all leagues at the same time
@@ -1180,10 +1198,13 @@ export default async function handler(req, res) {
           });
         } catch {}
       }
+      if (body.parlays_only === true && !rest.length) {
+        return res.status(200).json({ ok: true, parlays: sent, message: sent ? `Posted ${sent} parlay(s) for ${finalDates.join(', ')}` : 'No parlays could be built for the selected day(s)/league(s) (needs 2+ games with FanDuel lines).', dates: allDates, per_day: perDay });
+      }
       if (!sent && !rest.length && !more) {
         return res.status(200).json({ ok: true, message: allDates.length ? `No picks on selected day(s): ${allDates.join(', ')}` : 'No picks matched. Set league channels in /config.', dates: allDates, per_day: perDay, channels_used: posted });
       }
-      return res.status(200).json({ ok: true, message: `Posted ${sent} pick(s) for ${finalDates.join(', ') || dates.join(', ')}${rest.length ? ` — remaining days (${rest.join(', ')}) are posting next, in order` : ''}${truncated ? ` · ${truncated} skipped to stay in time` : ''}`, sent, leagues: posted, dates: allDates, per_day: perDay });
+      return res.status(200).json({ ok: true, message: `Posted ${sent} pick(s) for ${finalDates.join(', ') || dates.join(', ')}${rest.length ? ` — remaining days (${rest.join(', ')}) are posting next, in order` : ''}${truncated ? ` · ${truncated} skipped to stay in time` : ''}`, sent, leagues: posted, dates: allDates, per_day: perDay, ...(body.parlays_only === true ? { parlays: sent } : {}) });
     }
 
     let webhook = body.webhook_url || userRow?.discord_webhook || cfg.default_webhook || process.env.DISCORD_WEBHOOK_URL;

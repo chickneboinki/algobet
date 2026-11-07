@@ -56,6 +56,7 @@ async function registerDiscordBot() {
         ch('tracker', 'Result tracker channel'),
         ch('stats', 'Stat breakdown channel'),
         ch('alerts', 'Live game alerts channel'),
+        ch('parlays', 'Parlays channel'),
         ch('roles_panel', 'Role self-assign panel channel'),
         roleOpt('alert_role', 'Default ping role for live alerts'),
       ],
