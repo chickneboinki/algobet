@@ -100,7 +100,7 @@ async function fetchJson(url, headers) {
   return res.json();
 }
 
-async function fetchPrizePicks(sport) {
+async function fetchPrizePicksRaw(sport) {
   const headers = {
     'User-Agent':
       'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
@@ -171,7 +171,7 @@ async function fetchPrizePicks(sport) {
   return out;
 }
 
-async function fetchUnderdog() {
+async function fetchUnderdogRaw() {
   const data = await fetchJson('https://api.underdogfantasy.com/v1/over_under_lines', {
     'User-Agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15',
     Accept: 'application/json',
@@ -222,6 +222,19 @@ async function fetchUnderdog() {
 }
 
 /** Shared core: live props for one game. Used by the API route and the Discord bot. */
+const FEED_TTL = 90 * 1000;
+const feedCache = new Map();
+function cachedFeed(key, fn) {
+  const hit = feedCache.get(key);
+  if (hit && Date.now() - hit.at < FEED_TTL) return hit.p;
+  const p = fn();
+  feedCache.set(key, { at: Date.now(), p });
+  p.catch(() => feedCache.delete(key));
+  return p;
+}
+const fetchPrizePicks = (sport) => cachedFeed(`pp|${sport}`, () => fetchPrizePicksRaw(sport));
+const fetchUnderdog = () => cachedFeed('ud', () => fetchUnderdogRaw());
+
 export async function fetchPropsForGame({ sport, home, away, scope = 'game', combos = false } = {}) {
   sport = String(sport || '').toUpperCase();
   home = String(home || '');
