@@ -169,8 +169,7 @@ async function runSetup(guildId) {
   const made = [];
   let left = 0;
   for (const grp of SETUP_PLAN) {
-    const todo = grp.items.filter((it) => !cfg[it.key]);
-    if (!todo.length) continue;
+    const todo = grp.items;
     if (!catIds[grp.cat]) {
       if (Date.now() - t0 > 45000) { left += todo.length; continue; }
       const c = await botApi('POST', `/guilds/${guildId}/channels`, { name: grp.cat, type: 4 });
@@ -1068,7 +1067,7 @@ async function handleBotInteraction(it, res) {
     try {
       const r = await runSetup(guildId);
       await say(r.made.length || r.left
-        ? `Created/linked **${r.made.length}** channel(s):\n${r.made.join('  ').slice(0, 1400)}${r.left ? `\n\n⏳ **${r.left}** more to go — run **/setup** again to finish (Discord limits channel creation).` : '\n\n✅ Everything is set. Fine-tune anything in **/config**.'}`
+        ? `Set up **${r.made.length}** channel(s) (any channels you had set before were overwritten):\n${r.made.join('  ').slice(0, 1400)}${r.left ? `\n\n⏳ **${r.left}** more to go — run **/setup** again to finish (Discord limits channel creation; already-made channels are reused, nothing duplicates).` : '\n\n✅ All categories and channels are created and linked. Last step: set your alert roles with **/setroles**. Fine-tune anything in **/config**.'}`
         : '✅ Every channel is already set. Use **/config** to change any of them.');
     } catch (e) {
       await say(`Setup failed: ${e.message || e}\nThe bot needs **Manage Channels** permission — or set channels manually in **/config**.`);

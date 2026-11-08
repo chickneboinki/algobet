@@ -136,7 +136,7 @@ async function registerDiscordBot() {
     },
     {
       name: 'setup',
-      description: 'Admin: auto-create all game, parlay and player-prop categories + channels',
+      description: 'Admin: auto-create all categories + channels (overwrites existing channel settings)',
       ...admin,
     },
     {
