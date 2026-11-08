@@ -49,9 +49,15 @@ export function parseGameLog(j) {
   const byGame = new Map();
   const consume = (cat, catName) => {
     const labels = cat.labels || cat.names || topLabels;
-    if (labels.includes('CMP')) catName = 'passing';
-    else if (labels.includes('REC')) catName = 'receiving';
-    else if (labels.includes('CAR')) catName = 'rushing';
+    // NFL/NCAAF lists passing, rushing and receiving stats back-to-back with repeated labels
+    const groupAt = [];
+    let grp = catName;
+    labels.forEach((l, i) => {
+      if (l === 'CMP') grp = 'passing';
+      else if (l === 'CAR') grp = 'rushing';
+      else if (l === 'REC') grp = 'receiving';
+      groupAt[i] = grp;
+    });
     for (const ev of cat.events || []) {
       if (!ev?.stats) continue;
       const meta = events[ev.eventId] || {};
@@ -60,7 +66,8 @@ export function parseGameLog(j) {
         const v = ev.stats[i];
         if (v == null) return;
         if (g.rec[l] == null) g.rec[l] = v;
-        g.rec[`${catName}.${l}`] = v;
+        const k = `${groupAt[i]}.${l}`;
+        if (g.rec[k] == null) g.rec[k] = v;
       });
       byGame.set(ev.eventId, g);
     }
