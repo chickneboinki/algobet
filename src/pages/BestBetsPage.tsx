@@ -28,7 +28,7 @@ export default function BestBetsPage() {
   const [showDays, setShowDays] = useState(false)
   const [days, setDays] = useState<{ date: string; label: string; count: number; sports: string[]; by_league?: Record<string, number> }[]>([])
   const [picked, setPicked] = useState<string[]>([])
-  const [parlayMode, setParlayMode] = useState(false)
+  const [sendMode, setSendMode] = useState<'games' | 'parlays' | 'props' | 'all'>('games')
   const [pLeagues, setPLeagues] = useState<string[]>([])
   const [loadingDays, setLoadingDays] = useState(false)
 
@@ -54,8 +54,8 @@ export default function BestBetsPage() {
     load()
   }, [])
 
-  async function openSendModal(parlays = false) {
-    setParlayMode(parlays)
+  async function openSendModal(mode: 'games' | 'parlays' | 'props' | 'all' = 'games') {
+    setSendMode(mode)
     setPLeagues([])
     setShowDays(true)
     setLoadingDays(true)
@@ -91,17 +91,18 @@ export default function BestBetsPage() {
     setSending(true)
     try {
       const r = await api.notifyDiscord({
-        title: parlayMode ? 'HelpBet · Parlays' : 'HelpBet · Selected days',
+        title: 'HelpBet · Selected days',
         dates: picked,
-        ...(parlayMode ? { parlays_only: true, leagues: pLeagues.length ? pLeagues : undefined } : {}),
+        ...(sendMode === 'parlays' ? { parlays_only: true } : sendMode === 'props' ? { props_only: true } : sendMode === 'all' ? { everything: true } : {}),
+        ...(sendMode !== 'games' && pLeagues.length ? { leagues: pLeagues } : {}),
         webhook_url: webhook || undefined,
         username: session?.username,
       })
       setShowDays(false)
       showToast(
         r.ok
-          ? parlayMode
-            ? r.message || 'Parlays sent'
+          ? sendMode === 'parlays' || sendMode === 'props'
+            ? r.message || 'Sent'
             : r.sent
             ? `Posted ${r.sent} pick(s) for ${(r.dates || picked).join(', ')}${r.leagues?.length ? ' → ' + r.leagues.join(', ') : ''}`
             : r.message || `No picks on selected day(s)`
@@ -169,14 +170,18 @@ export default function BestBetsPage() {
         <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-black/70 p-4">
           <div className="card w-full max-w-md space-y-4 max-h-[85vh] overflow-y-auto">
             <div>
-              <h3 className="text-lg font-semibold">{parlayMode ? 'Send parlays — which days & leagues?' : 'Send which days?'}</h3>
+              <h3 className="text-lg font-semibold">{sendMode === 'parlays' ? 'Send parlays — which days & leagues?' : sendMode === 'props' ? 'Send player props — which days & leagues?' : sendMode === 'all' ? 'Send everything — which days & leagues?' : 'Send which days?'}</h3>
               <p className="hint text-xs mt-1">
-                {parlayMode
-                  ? 'Only parlays are sent (no game cards). They post to your Parlays channel and update with hit/miss + payout.'
-                  : 'Only the days you select will be sent (Central time). Only those games.'}
+                {sendMode === 'parlays'
+                  ? 'Only parlays (no game cards). Each sport goes to its own parlay channel, and results post live to the parlay results channel.'
+                  : sendMode === 'props'
+                    ? 'Only the best player props per sport, each backed by the player’s last 10 games. Posts to the sport’s props channel.'
+                    : sendMode === 'all'
+                      ? 'Game picks + parlays + player props, each to its own channels.'
+                      : 'Only the days you select will be sent (Central time). Only those games.'}
               </p>
             </div>
-            {parlayMode && (
+            {sendMode !== 'games' && (
               <div className="flex flex-wrap gap-2">
                 <button type="button" className={`chip ${pLeagues.length === 0 ? 'chip-on' : 'chip-off'}`} onClick={() => setPLeagues([])}>
                   All leagues
@@ -245,7 +250,7 @@ export default function BestBetsPage() {
                 disabled={sending || !picked.length}
                 onClick={confirmSend}
               >
-                {sending ? 'Sending…' : parlayMode ? `Send parlays · ${picked.length || ''} day(s)` : `Send ${picked.length || ''} day(s)`}
+                {sending ? 'Sending…' : `Send ${sendMode === 'games' ? '' : sendMode + ' · '}${picked.length || ''} day(s)`}
               </button>
             </div>
           </div>
@@ -264,11 +269,17 @@ export default function BestBetsPage() {
           <button type="button" className="btn-ghost" onClick={load}>
             Refresh
           </button>
-          <button type="button" className="btn-primary" onClick={() => openSendModal(false)}>
-            Send to channel
+          <button type="button" className="btn-primary" onClick={() => openSendModal('games')}>
+            Send games
           </button>
-          <button type="button" className="btn-primary" onClick={() => openSendModal(true)}>
+          <button type="button" className="btn-primary" onClick={() => openSendModal('parlays')}>
             Send parlays
+          </button>
+          <button type="button" className="btn-primary" onClick={() => openSendModal('props')}>
+            Send props
+          </button>
+          <button type="button" className="btn-primary" onClick={() => openSendModal('all')}>
+            Send everything
           </button>
         </div>
       </div>

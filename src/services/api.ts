@@ -49,6 +49,8 @@ export const api = {
     username?: string
     dates?: string[]
     parlays_only?: boolean
+    props_only?: boolean
+    everything?: boolean
   }) => {
     const session = loadSession()
     return req<any>('/notify', {

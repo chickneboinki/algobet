@@ -135,6 +135,11 @@ async function registerDiscordBot() {
       ],
     },
     {
+      name: 'setup',
+      description: 'Admin: auto-create all game, parlay and player-prop categories + channels',
+      ...admin,
+    },
+    {
       name: 'wipeallchannel',
       description: 'Admin: wipe messages in ALL channels set in /config',
       ...admin,
