@@ -49,6 +49,9 @@ export function parseGameLog(j) {
   const byGame = new Map();
   const consume = (cat, catName) => {
     const labels = cat.labels || cat.names || topLabels;
+    if (labels.includes('CMP')) catName = 'passing';
+    else if (labels.includes('REC')) catName = 'receiving';
+    else if (labels.includes('CAR')) catName = 'rushing';
     for (const ev of cat.events || []) {
       if (!ev?.stats) continue;
       const meta = events[ev.eventId] || {};
